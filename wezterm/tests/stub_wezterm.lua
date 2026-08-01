@@ -26,6 +26,17 @@ stub.background_child_process = function(args)
   table.insert(stub.__spawned, args)
 end
 
+stub.__handlers = {}
+stub.on = function(name, fn)
+  stub.__handlers[name] = fn
+end
+
+stub.time = {
+  now = function()
+    return { format = function() return "1700000000.000" end }
+  end,
+}
+
 -- nil means every directory reads; a table means only its keys do.
 stub.__dirs = nil
 stub.read_dir = function(path)

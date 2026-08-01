@@ -260,7 +260,11 @@ function M.apply(config, plugins, platform, state)
           })
         end,
       },
-      tabline_y = {
+      -- Empty on the platforms platform.lua has no verified sample command
+      -- for. It has to be named either way: tabline falls back to its own
+      -- datetime and battery components for a section left out entirely, and
+      -- its cpu and ram components shell out on every status tick.
+      tabline_y = platform.sysinfo_command and {
         function()
           local cpu, ram = refresh_sysinfo(platform)
           if not cpu then return "" end
@@ -268,7 +272,7 @@ function M.apply(config, plugins, platform, state)
           -- after the section's powerline divider does not get drawn.
           return string.format(" %s %s%%  %s %s GB", CPU_GLYPH, cpu, RAM_GLYPH, ram)
         end,
-      },
+      } or {},
       tabline_z = { "datetime" },
     },
     extensions = { "resurrect", "quick_domains" },

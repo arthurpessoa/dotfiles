@@ -53,15 +53,16 @@ local function ensure_state_dirs(platform, resurrect)
 end
 
 function M.load(platform)
-  local loaded = without_console(function()
-    return {
-      kanagawa = wezterm.plugin.require("https://github.com/sravioli/kanagawa.wz"),
-      tabline = wezterm.plugin.require("https://github.com/michaelbrusegard/tabline.wez"),
-      agent_deck = wezterm.plugin.require("https://github.com/Eric162/wezterm-agent-deck"),
-      resurrect = wezterm.plugin.require(RESURRECT),
-      domains = wezterm.plugin.require("https://github.com/DavidRR-F/quick_domains.wezterm"),
-    }
-  end)
+  -- Only resurrect's load is silenced. Swallowing os.execute around all five
+  -- would hide a call another plugin makes for its own good reasons, on every
+  -- platform, for the sake of a fault in one of them.
+  local loaded = {
+    kanagawa = wezterm.plugin.require("https://github.com/sravioli/kanagawa.wz"),
+    tabline = wezterm.plugin.require("https://github.com/michaelbrusegard/tabline.wez"),
+    agent_deck = wezterm.plugin.require("https://github.com/Eric162/wezterm-agent-deck"),
+    resurrect = without_console(function() return wezterm.plugin.require(RESURRECT) end),
+    domains = wezterm.plugin.require("https://github.com/DavidRR-F/quick_domains.wezterm"),
+  }
 
   ensure_state_dirs(platform, loaded.resurrect)
 
