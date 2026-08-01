@@ -3,6 +3,7 @@ local icons = require("modules.icons")
 local activity = require("modules.activity")
 local git = require("modules.git")
 local agent = require("modules.agent")
+local process = require("modules.process")
 
 local M = {}
 
@@ -135,17 +136,6 @@ local function agent_states(plugins)
   return entries
 end
 
--- tabline expects `{ "<glyph>", color = { fg = "#rrggbb" } }`; icons.lua speaks
--- `{ glyph = ..., color = ... }`. The translation belongs here, where the rest
--- of the presentation lives.
-local function process_to_icon()
-  local map = {}
-  for name, entry in pairs(icons.process_to_icon()) do
-    map[name] = { entry.glyph, color = { fg = entry.color } }
-  end
-  return map
-end
-
 -- tabline derives its own theme from a colour scheme table. Handed the Kanagawa
 -- scheme as-is it would take the tab-bar grey for the section background, so
 -- point that key at the real background first. get() returns a fresh clone, so
@@ -177,8 +167,35 @@ end
 local function tab_busy_marker(tab)
   local pane = tab.active_pane
   if not pane then return "" end
-  if icons.lookup(pane.foreground_process_name).kind ~= "busy" then return "" end
+  if icons.lookup(process.for_pane_info(pane)).kind ~= "busy" then return "" end
   return " " .. BUSY_GLYPH
+end
+
+-- tabline's own "process" component names the tab after WezTerm's foreground
+-- process, extension and all, and picks its icon from the same string; both are
+-- wrong for a pane running an agent (see modules/process.lua). Drawing the
+-- segment here keeps one name and one icon, from one resolved process.
+--
+-- The colour after the glyph has to be restored by hand, since a function
+-- component is inlined into the tab as pre-formatted text and tabline only
+-- re-applies its own attributes around components it built itself. These are
+-- the two it would have used -- config.lua's tab.active.fg and tab.inactive.fg.
+-- Hovering an inactive tab shifts that colour again, which a component cannot
+-- see, so the name stays the unhovered colour for as long as the pointer is on
+-- it.
+local function tab_process(theme)
+  local active_fg, inactive_fg = theme.ansi[5], theme.foreground
+  return function(tab)
+    local name = process.for_pane_info(tab.active_pane)
+    if name == "" then return "" end
+    local entry = icons.lookup(name)
+    return wezterm.format({
+      { Foreground = { Color = entry.color } },
+      { Text = entry.glyph },
+      { Foreground = { Color = tab.is_active and active_fg or inactive_fg } },
+      { Text = " " .. name .. " " },
+    })
+  end
 end
 
 function M.apply(config, plugins, platform, state)
@@ -199,10 +216,14 @@ function M.apply(config, plugins, platform, state)
     })
   end)
 
+  -- Read twice: tabline takes it as its theme, and the tab's own process
+  -- component has to restore the foreground colour tabline derives from it.
+  local theme = tabline_theme(plugins)
+
   plugins.tabline.setup({
     options = {
       icons_enabled = true,
-      theme = tabline_theme(plugins),
+      theme = theme,
       section_separators = {
         left = wezterm.nerdfonts.pl_left_hard_divider,
         right = wezterm.nerdfonts.pl_right_hard_divider,
@@ -232,14 +253,14 @@ function M.apply(config, plugins, platform, state)
       },
       tab_active = {
         "index",
-        { "process", padding = { left = 0, right = 1 }, process_to_icon = process_to_icon() },
+        tab_process(theme),
         tab_title,
         tab_busy_marker,
         "zoomed",
       },
       tab_inactive = {
         "index",
-        { "process", padding = { left = 0, right = 1 }, process_to_icon = process_to_icon() },
+        tab_process(theme),
         tab_title,
         tab_busy_marker,
         "zoomed",
@@ -247,9 +268,9 @@ function M.apply(config, plugins, platform, state)
       tabline_x = {
         function(window, pane)
           local deck = agent.pick(agent_states(plugins), pane and pane:pane_id() or nil)
-          local process = pane and pane:get_foreground_process_name() or nil
           local result = agent.update(
-            state.agent, agent.classify(deck, process), now_seconds(), window:is_focused())
+            state.agent, agent.classify(deck, process.resolve(pane)), now_seconds(),
+            window:is_focused())
           if result.notify then
             window:toast_notification(result.notify.title, result.notify.body, nil, 6000)
           end
@@ -290,7 +311,7 @@ function M.apply(config, plugins, platform, state)
     for _, tab in ipairs(window:mux_window():tabs_with_info()) do
       local pane = tab.tab:active_pane()
       local result = activity.update(
-        state.activity, pane:pane_id(), pane:get_foreground_process_name(),
+        state.activity, pane:pane_id(), process.resolve(pane),
         now_seconds(), tab.is_active and focused)
       if result.notify then
         window:toast_notification(result.notify.title, result.notify.body, nil, 6000)

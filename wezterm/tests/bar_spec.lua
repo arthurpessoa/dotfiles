@@ -11,9 +11,17 @@ local function apply_with(platform)
       setup = function(cfg) captured = cfg end,
       apply_to_config = function() end,
     },
+    -- Shaped like a real wezterm colour scheme, because bar.lua reads more of
+    -- it than the background: the tab process component takes its two title
+    -- colours from ansi[5] and foreground.
     kanagawa = {
       get = function()
-        return { background = "#1F1F28", tab_bar = { inactive_tab = { bg_color = "#000000" } } }
+        return {
+          background = "#1F1F28",
+          foreground = "#DCD7BA",
+          ansi = { "#090618", "#C34043", "#76946A", "#C0A36E", "#7E9CD8", "#957FB8", "#6A9589", "#C8C093" },
+          tab_bar = { inactive_tab = { bg_color = "#000000" } },
+        }
       end,
     },
     agent_deck = {},

@@ -1,0 +1,8 @@
+# install.sh is fetched and piped into sh. A CRLF checkout makes every line of
+# it fail with "\r: command not found", so its endings are pinned regardless of
+# the cloning machine's core.autocrlf.
+*.sh text eol=lf
+
+# PowerShell is content either way, but keeping it native avoids noisy diffs on
+# Windows, which is the only place it runs.
+*.ps1 text eol=crlf

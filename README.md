@@ -5,8 +5,47 @@ WezTerm and Neovim configuration for Windows, macOS, and Linux.
 - `wezterm/` — modular WezTerm config: bottom powerline bar via `tabline.wez`,
   per-process icons, an activity spinner, git state, AI agent state, and
   desktop notifications.
-- `nvim/` — LazyVim, with `smart-splits.nvim` for unified pane navigation.
-- `docs/specs/` — design documents. `docs/plans/` — implementation plans.
+- `nvim/` — LazyVim, with `smart-splits.nvim` for split navigation.
+
+## Install
+
+Windows:
+
+```powershell
+irm https://raw.githubusercontent.com/arthurpessoa/dotfiles/main/install.ps1 | iex
+```
+
+macOS and Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/arthurpessoa/dotfiles/main/install.sh | sh
+```
+
+Either one clones this repository to `~/.dotfiles` — or pulls it if it is
+already there — and links the config directories into place. Running it again
+changes nothing: links already pointing at the repo are reported and left alone.
+
+Piping a URL into a shell runs whatever that URL serves at that moment, with no
+chance to read it first. To look before running:
+
+```powershell
+irm https://raw.githubusercontent.com/arthurpessoa/dotfiles/main/install.ps1 -OutFile install.ps1
+# read it, then:
+./install.ps1
+```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/arthurpessoa/dotfiles/main/install.sh -o install.sh
+# read it, then:
+sh install.sh
+```
+
+To see what it would do without doing it, set `DOTFILES_DRY_RUN=1` for the
+PowerShell script or pass `--dry-run` to the shell one.
+
+**It links configuration only.** WezTerm, Neovim and the Nerd Font are not
+installed for you — see Requirements below. An installer that resolves and
+installs those per platform is a separate piece of work, not yet built.
 
 ## Layout
 
