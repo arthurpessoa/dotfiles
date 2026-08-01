@@ -34,6 +34,24 @@ describe("keys.build", function()
     assert_true(find(list, "d", "LEADER") ~= nil, "missing domain picker")
   end)
 
+  -- The split actions are built at press time inside a callback, so the only
+  -- way to see which one a key performs is to run the callback.
+  local function performed(entry)
+    local action
+    local window = { perform_action = function(_self, act) action = act end }
+    local pane = { get_current_working_dir = function() return "/tmp" end }
+    entry.action.fn(window, pane)
+    return action.__action
+  end
+
+  it("puts the new pane where the key says it goes", function()
+    local list = keys.build("CTRL|SHIFT")
+    -- WezTerm reads its own names the other way round from vim and tmux:
+    -- SplitHorizontal is the one that puts the new pane to the right.
+    assert_eq(performed(find(list, "v", "CTRL|SHIFT")), "SplitHorizontal")
+    assert_eq(performed(find(list, "h", "CTRL|SHIFT")), "SplitVertical")
+  end)
+
   it("binds smart-splits navigation on plain CTRL", function()
     local list = keys.build("CTRL|SHIFT")
     for _, k in ipairs({ "h", "j", "k", "l" }) do
@@ -77,6 +95,14 @@ describe("keys.apply", function()
     local config, log = applied()
     assert_eq(log.domain_opts.keys.attach.key, "d")
     assert_eq(log.domain_opts.keys.attach.mods, "LEADER")
+  end)
+
+  it("gives the plugin's splits the same keys as this config's own", function()
+    local _config, log = applied()
+    -- quick_domains names its splits after WezTerm's actions, so its hsplit is
+    -- the one that opens beside -- which is what V does everywhere else here.
+    assert_eq(log.domain_opts.keys.hsplit.key, "V")
+    assert_eq(log.domain_opts.keys.vsplit.key, "H")
   end)
 
   it("leaves the plugin no key that collides with an existing binding", function()

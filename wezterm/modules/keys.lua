@@ -18,10 +18,13 @@ end
 -- A split action carries the cwd it was built with, and the domain's default is
 -- the home directory rather than the pane's. Reading the pane needs a callback,
 -- so the action is built at press time.
-local function split(direction)
+-- Named for where the new pane lands, not for WezTerm's own terms: it calls a
+-- side-by-side split "horizontal", which is the opposite of what vim and tmux
+-- call it, and the keys here follow vim -- v splits beside, h splits below.
+local function split(placement)
   return wezterm.action_callback(function(window, pane)
     local cwd = pane:get_current_working_dir()
-    local action = direction == "horizontal"
+    local action = placement == "beside"
       and wezterm.action.SplitHorizontal({ cwd = cwd })
       or wezterm.action.SplitVertical({ cwd = cwd })
     window:perform_action(action, pane)
@@ -49,8 +52,8 @@ function M.build(mod_primary)
     table.insert(list, { key = key, mods = "CTRL", action = smart_split_nav(key) })
   end
 
-  table.insert(list, { key = "v", mods = mod_primary, action = split("vertical") })
-  table.insert(list, { key = "h", mods = mod_primary, action = split("horizontal") })
+  table.insert(list, { key = "v", mods = mod_primary, action = split("beside") })
+  table.insert(list, { key = "h", mods = mod_primary, action = split("below") })
   table.insert(list, { key = "t", mods = mod_primary,
     action = wezterm.action.SpawnTab("CurrentPaneDomain") })
   table.insert(list, { key = "[", mods = mod_primary,
@@ -116,12 +119,13 @@ function M.apply(config, plugins, platform)
 
   -- Has to run after config.keys is populated, and its own defaults sit on
   -- CTRL+d, CTRL+v and CTRL+h -- the last of which is smart-splits navigation.
-  -- All three move behind the leader.
+  -- All three move behind the leader. Its split names follow WezTerm's, so
+  -- hsplit -- the one that opens beside -- takes V, matching the plain splits.
   plugins.domains.apply_to_config(config, {
     keys = {
       attach = { mods = "LEADER", key = "d", tbl = "" },
-      vsplit = { mods = "LEADER", key = "V", tbl = "" },
-      hsplit = { mods = "LEADER", key = "H", tbl = "" },
+      hsplit = { mods = "LEADER", key = "V", tbl = "" },
+      vsplit = { mods = "LEADER", key = "H", tbl = "" },
     },
   })
 
