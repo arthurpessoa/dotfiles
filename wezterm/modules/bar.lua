@@ -131,6 +131,19 @@ local function tabline_theme(plugins)
   return scheme
 end
 
+-- Neovim publishes the file it has open as an OSC 1337 user var (see
+-- nvim/lua/config/autocmds.lua) and WezTerm keeps user vars per pane, so the
+-- tab can name the file rather than repeat the process. Neovim writes an empty
+-- value on exit, which is what puts the tab title back. tabline's own "tab"
+-- component renders the literal string "default" for an untitled tab, so the
+-- fallback is handled here too.
+local function tab_title(tab)
+  local pane = tab.active_pane
+  local file = pane and pane.user_vars and pane.user_vars["nvim-file"]
+  if file and file ~= "" then return file end
+  return tab.tab_title or ""
+end
+
 -- Read-only on purpose. activity.update advances the store and consumes the
 -- busy -> idle transition that raises the notification, and format-tab-title
 -- runs on its own schedule as well as on the status tick, so calling update
@@ -184,14 +197,14 @@ function M.apply(config, plugins, platform, state)
       tab_active = {
         "index",
         { "process", padding = { left = 0, right = 1 }, process_to_icon = process_to_icon() },
-        "tab",
+        tab_title,
         tab_busy_marker,
         "zoomed",
       },
       tab_inactive = {
         "index",
         { "process", padding = { left = 0, right = 1 }, process_to_icon = process_to_icon() },
-        "tab",
+        tab_title,
         tab_busy_marker,
         "zoomed",
       },
