@@ -66,9 +66,17 @@ be executed on their target systems, and Git Bash exercises POSIX syntax and
 control flow but never a real package manager.
 
 **The change.** This machine has WSL Ubuntu-24.04. `install.sh` is executed
-there for real: `--dry-run` first, then a live run of a small `--only` subset,
-then the link phase, with the results recorded in the task that runs them. Real
-apt, real symlinks, real downloads, mutating that distro alone and never
+there for real, with the results recorded in the task that runs them:
+
+1. `--dry-run --all`, which must resolve every row without touching anything.
+2. `--only git,neovim --yes`, a live install through apt. `git` is already
+   present in that distro and `neovim` is not, so one run covers both the
+   installed path and the missing path.
+3. `--only dotfiles --yes`, which clones and links, then a second run of the
+   same to prove re-linking replaces rather than fails, and that an existing
+   config directory is renamed rather than removed.
+
+Real apt, real symlinks, real downloads, mutating that distro alone and never
 Windows.
 
 macOS remains unverified. The README says so plainly rather than implying
