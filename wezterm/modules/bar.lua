@@ -12,14 +12,22 @@ local M = {}
 local SYSINFO_POLL_SECONDS = 10
 
 -- agent-deck reads each pane's scrollback to tell working from waiting, so it
--- runs far slower than the status tick as well.
-local AGENT_POLL_SECONDS = 0.5
+-- runs far slower than the status tick as well. It is not cheap: update_pane
+-- pulls a hundred lines out of the pane, strips ANSI from them and runs the
+-- pattern set over the result, per pane, on the GUI thread. Half a second of
+-- that against a pane streaming output is felt as input lag.
+local AGENT_POLL_SECONDS = 2.0
 local agent_polled_at = -math.huge
+
+-- How often a sample file is re-read. The samples themselves are written by
+-- background processes on much slower intervals, so opening them on every tick
+-- only ever re-read the same bytes.
+local READ_SECONDS = 1.0
 
 -- The sysinfo poll is a single global reading, not per-pane state, so it lives
 -- here rather than in the `state` table bar.apply is handed. Both are rebuilt
 -- from scratch on every config reload.
-local sysinfo = { polled_at = -math.huge, path = nil, cpu = nil, ram = nil }
+local sysinfo = { polled_at = -math.huge, read_at = -math.huge, text = nil, path = nil, cpu = nil, ram = nil }
 
 -- Tab titles are not redrawn on the status tick. WezTerm calls
 -- format-tab-title often enough, but it repaints the tab bar only every few
@@ -50,6 +58,12 @@ end
 -- Every sample in this module goes through here: a background process writes
 -- to a file and the status callback only ever opens that file. Nothing on the
 -- callback waits for a child process.
+--
+-- The read is on its own, faster clock rather than on the poll's. Reading only
+-- when the poll fires would land on the file at the moment the redirection has
+-- just truncated it, so the segment would always be showing the reading before
+-- last; reading on every tick opened the same unchanged file eight times a
+-- second. READ_SECONDS sits between the two.
 local function poll(entry, platform, interval, command)
   local now = now_seconds()
   if now - entry.polled_at >= interval then
@@ -57,7 +71,11 @@ local function poll(entry, platform, interval, command)
     wezterm.background_child_process(
       platform.shell_cmd(string.format('%s > "%s" 2>&1', command, entry.path)))
   end
-  return read_file(entry.path)
+  if now - (entry.read_at or -math.huge) >= READ_SECONDS then
+    entry.read_at = now
+    entry.text = read_file(entry.path)
+  end
+  return entry.text
 end
 
 -- A pane's working directory arrives as a URL, and on Windows its file_path
@@ -77,7 +95,13 @@ local function refresh_git(state, platform, cwd)
   local entry = state.git[key]
 
   if not entry then
-    entry = { info = nil, polled_at = -math.huge, path = git.cache_path(platform.temp_dir, key) }
+    entry = {
+      info = nil,
+      polled_at = -math.huge,
+      read_at = -math.huge,
+      text = nil,
+      path = git.cache_path(platform.temp_dir, key),
+    }
     state.git[key] = entry
   end
 

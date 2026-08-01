@@ -16,6 +16,7 @@ local specs = {
   "git_spec",
   "agent_spec",
   "platform_spec",
+  "process_spec",
   "keys_spec",
   "plugins_spec",
   "bar_spec",

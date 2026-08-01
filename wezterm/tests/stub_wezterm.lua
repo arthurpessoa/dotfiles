@@ -31,11 +31,19 @@ stub.on = function(name, fn)
   stub.__handlers[name] = fn
 end
 
+-- Frozen unless a spec moves it. Anything that caches on a clock needs to be
+-- able to step it, so the reading lives in a field rather than a literal.
+stub.__now = 1700000000.0
+
 stub.time = {
   now = function()
-    return { format = function() return "1700000000.000" end }
+    return { format = function() return string.format("%.3f", stub.__now) end }
   end,
 }
+
+function stub.__advance(seconds)
+  stub.__now = stub.__now + seconds
+end
 
 -- nil means every directory reads; a table means only its keys do.
 stub.__dirs = nil
@@ -50,6 +58,7 @@ function stub.__reset()
   stub.__plugin_factories = {}
   stub.__spawned = {}
   stub.__dirs = nil
+  stub.__now = 1700000000.0
 end
 
 -- wezterm.action.Foo is a value and wezterm.action.Foo({...}) is a call, and the

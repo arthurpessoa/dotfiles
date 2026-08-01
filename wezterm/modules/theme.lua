@@ -36,7 +36,12 @@ function M.apply(config, plugins, platform)
   config.hide_tab_bar_if_only_one_tab = false
   config.tab_bar_at_bottom = true
 
-  config.status_update_interval = 120
+  -- Everything the bar does runs on this clock, on the GUI thread, so the tick
+  -- rate is an input-latency setting as much as a refresh rate. 120ms was
+  -- chosen to match the spinner's eight frames a second; at 250 the spinner
+  -- takes every other frame, which still reads as motion, and the window keeps
+  -- twice as much of the thread for drawing and keystrokes.
+  config.status_update_interval = 250
 end
 
 return M
