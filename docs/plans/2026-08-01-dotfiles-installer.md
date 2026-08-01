@@ -8,7 +8,7 @@
 
 **Tech Stack:** PowerShell 7 with Pester 5, POSIX `sh` with a hand-written assert harness, winget, scoop, brew, apt/dnf/pacman, sdkman, npm.
 
-**Spec:** `docs/specs/2026-08-01-wezterm-dotfiles-design.md`
+**Spec:** `docs/specs/2026-08-01-wezterm-dotfiles-design.md`, amended by `docs/specs/2026-08-01-installer-amendments-design.md`
 
 **Depends on:** `docs/plans/2026-08-01-wezterm-config.md`, which creates the repo, the configs, and `README.md`.
 
@@ -18,6 +18,8 @@
 - Nothing in `install/lib/` may perform an install, write outside a temp directory, or read the real environment at import time. Side effects happen only inside `Invoke-Rows` / `run_rows`, which take the runner as a parameter.
 - Resolution **prefers user scope even when administrator rights are available**, so a machine resolves the same whether or not the shell is elevated.
 - A row with no viable method is **disabled with its reason shown**, never hidden and never silently skipped.
+- A row knows itself by a **list** of commands plus an optional per-method path, and reports `installed`, `partial` or `missing`. A single sentinel command would let a half-installed row claim to be whole.
+- A row **succeeds when its checks pass afterwards**, not when its command exits zero. Managers exit non-zero refusing to reinstall what is already present, and a command can exit zero while installing nothing.
 - WezTerm is pinned to nightly on every platform: `scoop:versions/wezterm-nightly`, `brew --cask wezterm@nightly`, and the GitHub `nightly` release on Linux.
 - `bash` on Windows PATH is **WSL**, not Git Bash. Anything that must run under Git Bash uses the full path `C:\Program Files\Git\bin\bash.exe`.
 - sdkman is POSIX-only. On Windows the jvm row falls back to `scoop:java/temurin-lts` when Git Bash is absent.
@@ -35,8 +37,8 @@
 | `install.sh` | macOS and Linux entry point. Same shape in POSIX `sh`. |
 | `install/lib/args.ps1` / `args.sh` | Command-line parsing. Pure. |
 | `install/lib/probe.ps1` / `probe.sh` | OS, arch, privilege, managers. Takes a command-existence probe as a parameter. |
-| `install/catalog.psd1` / `catalog.sh` | The rows: id, group, label, check, and methods per platform. Data only. |
-| `install/lib/resolver.ps1` / `resolver.sh` | The source ladder. Pure over `(row, environment, wingetProbe)`. |
+| `install/catalog.psd1` / `catalog.sh` | The rows: id, group, label, checks, and methods per platform, each method carrying an optional check path. Data only. |
+| `install/lib/resolver.ps1` / `resolver.sh` | The source ladder, and the row status. Pure over `(row, environment, wingetProbe, commandProbe, pathProbe)`. |
 | `install/lib/ui.ps1` / `ui.sh` | Renders the menu to an array of lines, and maps keypresses to state changes. Pure. |
 | `install/lib/exec.ps1` / `exec.sh` | Ordered execution, one elevation, failure capture, summary. Runner injected. |
 | `install/lib/link.ps1` / `link.sh` | Junctions and symlinks with timestamped backups. |
@@ -431,9 +433,18 @@ install the wrong set."
 **Interfaces:**
 - Consumes: nothing.
 - Produces:
-  - `Import-Catalog([string] $Path) -> object[]`. Each row: `Id` (string, unique), `Group` (string), `Label` (string), `Check` (string — a command whose presence means installed), `Methods` (array). Each method: `Platform` (`windows|macos|linux`), `Manager` (string), `Scope` (`user|machine`), `Install` (string), `Note` (string or `$null`).
-  - `Test-Catalog($rows) -> string[]` — a list of problems, empty when valid.
-  - `catalog_rows` in `catalog.sh` emitting one `id|group|label|check` line per row, and `catalog_methods <id>` emitting `platform|manager|scope|install` lines.
+  - `Import-Catalog([string] $Path) -> object[]`. Each row: `Id` (string, unique), `Group` (string), `Label` (string), `Checks` (string[] — every command the row provides; empty for a row that installs no command), `Methods` (array). Each method: `Platform` (`windows|macos|linux`), `Manager` (string), `Scope` (`user|machine`), `Install` (string), `CheckPath` (string or `$null` — a path whose existence means this method's work is done), `Note` (string or `$null`).
+  - `Test-Catalog($rows) -> string[]` — a list of problems, empty when valid. A row with an empty `Checks` and a method without a `CheckPath` is a problem: nothing could ever tell whether it is installed.
+  - `catalog_rows` in `catalog.sh` emitting one `id|group|label|checks` line per row, where `checks` is a space-separated command list and may be empty; and `catalog_methods <id>` emitting `platform|manager|scope|checkpath|install` lines, where `checkpath` may be empty.
+
+A row carries a *list* of checks rather than one command because a row can
+install more than one thing. `toolbelt` installs nine tools; behind a single
+sentinel command, a machine with ripgrep but without bat reports the row
+installed and never gets bat. The list makes a partial install visible.
+
+`CheckPath` sits on the method rather than the row because only the method knows
+where its manager puts things: the Nerd Font lands in `~/Library/Fonts` under
+brew and `~/.local/share/fonts` under the GitHub download.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -485,6 +496,34 @@ Describe 'catalog' {
         $win.Count | Should -BeGreaterThan 1
         ($win | Where-Object Manager -eq 'scoop').Install | Should -Match 'temurin'
     }
+
+    It 'can tell whether every row is installed' {
+        foreach ($row in $script:Rows) {
+            $byPath = @($row.Methods | Where-Object { $_.CheckPath }).Count -eq @($row.Methods).Count
+            ($row.Checks.Count -gt 0 -or $byPath) | Should -BeTrue -Because $row.Id
+        }
+    }
+
+    It 'lists every command the toolbelt installs, not just the first' {
+        $belt = $script:Rows | Where-Object Id -eq 'toolbelt'
+        $belt.Checks | Should -Contain 'rg'
+        $belt.Checks | Should -Contain 'bat'
+        $belt.Checks.Count | Should -Be 9
+    }
+
+    It 'does not let the two docker rows answer for each other' {
+        $desktop = $script:Rows | Where-Object Id -eq 'docker-desktop'
+        $cli = $script:Rows | Where-Object Id -eq 'docker-cli'
+        $shared = @($desktop.Checks | Where-Object { $_ -in $cli.Checks })
+        $shared.Count | Should -Be 0
+    }
+
+    It 'checks sdkman by its init script rather than a command' {
+        # sdk is a shell function sourced into bash, never a binary on PATH.
+        $sdkman = $script:Rows | Where-Object Id -eq 'sdkman'
+        $sdkman.Checks.Count | Should -Be 0
+        foreach ($m in $sdkman.Methods) { $m.CheckPath | Should -Match 'sdkman-init' }
+    }
 }
 ```
 
@@ -500,20 +539,20 @@ Create `install/catalog.psd1`. Rows are ordered: managers, core, toolbelt, toolc
 ```powershell
 @{
     Rows = @(
-        @{ Id='scoop'; Group='PACKAGE MANAGERS'; Label='scoop'; Check='scoop'
+        @{ Id='scoop'; Group='PACKAGE MANAGERS'; Label='scoop'; Checks=@('scoop')
            Methods=@(
              @{ Platform='windows'; Manager='self'; Scope='user'
                 Install='Invoke-RestMethod get.scoop.sh | Invoke-Expression' }
            ) }
 
-        @{ Id='winget'; Group='PACKAGE MANAGERS'; Label='winget'; Check='winget'
+        @{ Id='winget'; Group='PACKAGE MANAGERS'; Label='winget'; Checks=@('winget')
            Methods=@(
              @{ Platform='windows'; Manager='self'; Scope='machine'
                 Install='Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe'
                 Note='ships with Windows 11; reinstall needs the Store' }
            ) }
 
-        @{ Id='brew'; Group='PACKAGE MANAGERS'; Label='homebrew'; Check='brew'
+        @{ Id='brew'; Group='PACKAGE MANAGERS'; Label='homebrew'; Checks=@('brew')
            Methods=@(
              @{ Platform='macos'; Manager='self'; Scope='user'
                 Install='/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"' }
@@ -521,16 +560,23 @@ Create `install/catalog.psd1`. Rows are ordered: managers, core, toolbelt, toolc
                 Install='/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"' }
            ) }
 
-        @{ Id='sdkman'; Group='PACKAGE MANAGERS'; Label='sdkman'; Check='sdk'
+        # sdk is a shell function, not a binary, so this row is known by its
+        # init script alone.
+        @{ Id='sdkman'; Group='PACKAGE MANAGERS'; Label='sdkman'; Checks=@()
            Methods=@(
-             @{ Platform='macos'; Manager='self'; Scope='user'; Install='curl -s "https://get.sdkman.io" | bash' }
-             @{ Platform='linux'; Manager='self'; Scope='user'; Install='curl -s "https://get.sdkman.io" | bash' }
+             @{ Platform='macos'; Manager='self'; Scope='user'
+                CheckPath='$HOME/.sdkman/bin/sdkman-init.sh'
+                Install='curl -s "https://get.sdkman.io" | bash' }
+             @{ Platform='linux'; Manager='self'; Scope='user'
+                CheckPath='$HOME/.sdkman/bin/sdkman-init.sh'
+                Install='curl -s "https://get.sdkman.io" | bash' }
              @{ Platform='windows'; Manager='gitbash'; Scope='user'
+                CheckPath='$HOME/.sdkman/bin/sdkman-init.sh'
                 Install='& "C:\Program Files\Git\bin\bash.exe" -lc ''curl -s "https://get.sdkman.io" | bash'''
                 Note='requires Git Bash' }
            ) }
 
-        @{ Id='git'; Group='CORE'; Label='git'; Check='git'
+        @{ Id='git'; Group='CORE'; Label='git'; Checks=@('git')
            Methods=@(
              @{ Platform='windows'; Manager='winget'; Scope='user'; Install='winget install --scope user -e --id Git.Git' }
              @{ Platform='windows'; Manager='scoop';  Scope='user'; Install='scoop install main/git' }
@@ -539,7 +585,7 @@ Create `install/catalog.psd1`. Rows are ordered: managers, core, toolbelt, toolc
              @{ Platform='linux';   Manager='system'; Scope='machine'; Install='git' }
            ) }
 
-        @{ Id='wezterm'; Group='CORE'; Label='wezterm (nightly)'; Check='wezterm'
+        @{ Id='wezterm'; Group='CORE'; Label='wezterm (nightly)'; Checks=@('wezterm')
            Methods=@(
              @{ Platform='windows'; Manager='scoop'; Scope='user'
                 Install='scoop bucket add versions; scoop install versions/wezterm-nightly' }
@@ -551,7 +597,7 @@ Create `install/catalog.psd1`. Rows are ordered: managers, core, toolbelt, toolc
                 Install='wezterm-nightly' }
            ) }
 
-        @{ Id='neovim'; Group='CORE'; Label='neovim'; Check='nvim'
+        @{ Id='neovim'; Group='CORE'; Label='neovim'; Checks=@('nvim')
            Methods=@(
              @{ Platform='windows'; Manager='scoop';  Scope='user'; Install='scoop install main/neovim' }
              @{ Platform='windows'; Manager='winget'; Scope='machine'; Install='winget install --scope machine -e --id Neovim.Neovim' }
@@ -559,17 +605,22 @@ Create `install/catalog.psd1`. Rows are ordered: managers, core, toolbelt, toolc
              @{ Platform='linux';   Manager='brew';   Scope='user'; Install='brew install neovim' }
            ) }
 
-        @{ Id='nerdfont'; Group='CORE'; Label='JetBrainsMono Nerd Font'; Check=''
+        # A font installs no command, and each manager drops it somewhere else.
+        @{ Id='nerdfont'; Group='CORE'; Label='JetBrainsMono Nerd Font'; Checks=@()
            Methods=@(
              @{ Platform='windows'; Manager='scoop'; Scope='user'
+                CheckPath='$HOME\scoop\apps\JetBrainsMono-NF\current'
                 Install='scoop bucket add nerd-fonts; scoop install nerd-fonts/JetBrainsMono-NF' }
              @{ Platform='macos'; Manager='brew'; Scope='user'
+                CheckPath='$HOME/Library/Fonts/JetBrainsMonoNerdFont-Regular.ttf'
                 Install='brew install --cask font-jetbrains-mono-nerd-font' }
              @{ Platform='linux'; Manager='github'; Scope='user'
+                CheckPath='$HOME/.local/share/fonts/JetBrainsMonoNerdFont-Regular.ttf'
                 Install='mkdir -p "$HOME/.local/share/fonts" && curl -fsSL -o /tmp/jbm.zip https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip && unzip -o /tmp/jbm.zip -d "$HOME/.local/share/fonts" && fc-cache -f' }
            ) }
 
-        @{ Id='toolbelt'; Group='TOOLBELT'; Label='ripgrep fd fzf bat eza zoxide lazygit gh jq'; Check='rg'
+        @{ Id='toolbelt'; Group='TOOLBELT'; Label='ripgrep fd fzf bat eza zoxide lazygit gh jq'
+           Checks=@('rg', 'fd', 'fzf', 'bat', 'eza', 'zoxide', 'lazygit', 'gh', 'jq')
            Methods=@(
              @{ Platform='windows'; Manager='scoop'; Scope='user'
                 Install='scoop bucket add extras; scoop install main/ripgrep main/fd main/fzf main/bat main/eza main/zoxide extras/lazygit main/gh main/jq' }
@@ -579,14 +630,16 @@ Create `install/catalog.psd1`. Rows are ordered: managers, core, toolbelt, toolc
                 Install='brew install ripgrep fd fzf bat eza zoxide lazygit gh jq' }
            ) }
 
-        @{ Id='rust'; Group='TOOLCHAINS'; Label='rust'; Check='cargo'
+        @{ Id='rust'; Group='TOOLCHAINS'; Label='rust'; Checks=@('cargo', 'rustc')
            Methods=@(
              @{ Platform='windows'; Manager='scoop'; Scope='user'; Install='scoop install main/rustup' }
              @{ Platform='macos';   Manager='self';  Scope='user'; Install='curl --proto ''=https'' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y' }
              @{ Platform='linux';   Manager='self';  Scope='user'; Install='curl --proto ''=https'' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y' }
            ) }
 
-        @{ Id='node'; Group='TOOLCHAINS'; Label='node (fnm)'; Check='node'
+        # The row installs fnm; node itself arrives through `fnm install`, so
+        # fnm is what tells you the row is done.
+        @{ Id='node'; Group='TOOLCHAINS'; Label='node (fnm)'; Checks=@('fnm')
            Methods=@(
              @{ Platform='windows'; Manager='winget'; Scope='user'; Install='winget install --scope user -e --id Schniz.fnm' }
              @{ Platform='windows'; Manager='scoop';  Scope='user'; Install='scoop install main/fnm' }
@@ -594,7 +647,7 @@ Create `install/catalog.psd1`. Rows are ordered: managers, core, toolbelt, toolc
              @{ Platform='linux';   Manager='brew';   Scope='user'; Install='brew install fnm' }
            ) }
 
-        @{ Id='python'; Group='TOOLCHAINS'; Label='python (uv)'; Check='uv'
+        @{ Id='python'; Group='TOOLCHAINS'; Label='python (uv)'; Checks=@('uv')
            Methods=@(
              @{ Platform='windows'; Manager='winget'; Scope='user'; Install='winget install --scope user -e --id astral-sh.uv' }
              @{ Platform='windows'; Manager='scoop';  Scope='user'; Install='scoop install main/uv' }
@@ -602,7 +655,7 @@ Create `install/catalog.psd1`. Rows are ordered: managers, core, toolbelt, toolc
              @{ Platform='linux';   Manager='brew';   Scope='user'; Install='brew install uv' }
            ) }
 
-        @{ Id='jvm'; Group='TOOLCHAINS'; Label='jvm'; Check='java'
+        @{ Id='jvm'; Group='TOOLCHAINS'; Label='jvm'; Checks=@('java')
            Methods=@(
              @{ Platform='windows'; Manager='gitbash'; Scope='user'
                 Install='& "C:\Program Files\Git\bin\bash.exe" -lc ''source "$HOME/.sdkman/bin/sdkman-init.sh" && sdk install java'''
@@ -615,33 +668,43 @@ Create `install/catalog.psd1`. Rows are ordered: managers, core, toolbelt, toolc
                 Install='source "$HOME/.sdkman/bin/sdkman-init.sh" && sdk install java' }
            ) }
 
-        @{ Id='docker-desktop'; Group='CONTAINERS + AI'; Label='docker desktop'; Check='docker'
+        # Both docker rows would answer to the `docker` command, so the desktop
+        # row is known by the application it installs instead.
+        @{ Id='docker-desktop'; Group='CONTAINERS + AI'; Label='docker desktop'; Checks=@()
            Methods=@(
              @{ Platform='windows'; Manager='winget'; Scope='machine'
+                CheckPath='C:\Program Files\Docker\Docker\Docker Desktop.exe'
                 Install='winget install --scope machine -e --id Docker.DockerDesktop' }
-             @{ Platform='macos'; Manager='brew'; Scope='user'; Install='brew install --cask docker' }
-             @{ Platform='linux'; Manager='system'; Scope='machine'; Install='docker.io' }
+             @{ Platform='macos'; Manager='brew'; Scope='user'
+                CheckPath='/Applications/Docker.app'
+                Install='brew install --cask docker' }
+             @{ Platform='linux'; Manager='system'; Scope='machine'
+                CheckPath='/opt/docker-desktop'
+                Install='docker.io' }
            ) }
 
-        @{ Id='docker-cli'; Group='CONTAINERS + AI'; Label='docker cli'; Check='docker'
+        @{ Id='docker-cli'; Group='CONTAINERS + AI'; Label='docker cli'; Checks=@('docker')
            Methods=@(
              @{ Platform='windows'; Manager='scoop'; Scope='user'; Install='scoop install main/docker' }
              @{ Platform='macos';   Manager='brew';  Scope='user'; Install='brew install docker' }
              @{ Platform='linux';   Manager='brew';  Scope='user'; Install='brew install docker' }
            ) }
 
-        @{ Id='ai-clis'; Group='CONTAINERS + AI'; Label='claude-code'; Check='claude'
+        @{ Id='ai-clis'; Group='CONTAINERS + AI'; Label='claude-code'; Checks=@('claude')
            Methods=@(
              @{ Platform='windows'; Manager='npm'; Scope='user'; Install='npm install -g @anthropic-ai/claude-code' }
              @{ Platform='macos';   Manager='npm'; Scope='user'; Install='npm install -g @anthropic-ai/claude-code' }
              @{ Platform='linux';   Manager='npm'; Scope='user'; Install='npm install -g @anthropic-ai/claude-code' }
            ) }
 
-        @{ Id='dotfiles'; Group='DOTFILES'; Label='clone + link configs'; Check=''
+        @{ Id='dotfiles'; Group='DOTFILES'; Label='clone + link configs'; Checks=@()
            Methods=@(
-             @{ Platform='windows'; Manager='builtin'; Scope='user'; Install='<link>' }
-             @{ Platform='macos';   Manager='builtin'; Scope='user'; Install='<link>' }
-             @{ Platform='linux';   Manager='builtin'; Scope='user'; Install='<link>' }
+             @{ Platform='windows'; Manager='builtin'; Scope='user'
+                CheckPath='$HOME\.config\wezterm'; Install='<link>' }
+             @{ Platform='macos';   Manager='builtin'; Scope='user'
+                CheckPath='$HOME/.config/wezterm'; Install='<link>' }
+             @{ Platform='linux';   Manager='builtin'; Scope='user'
+                CheckPath='$HOME/.config/wezterm'; Install='<link>' }
            ) }
     )
 }
@@ -655,7 +718,14 @@ Create `install/lib/catalog.ps1`:
 function Import-Catalog {
     param([Parameter(Mandatory)] [string] $Path)
     $data = Import-PowerShellDataFile -Path $Path
-    return @($data.Rows | ForEach-Object { [pscustomobject] $_ })
+    return @($data.Rows | ForEach-Object {
+        $row = [pscustomobject] $_
+        if (-not $row.PSObject.Properties['Checks']) {
+            $row | Add-Member -NotePropertyName Checks -NotePropertyValue @()
+        }
+        $row.Checks = @($row.Checks)
+        $row
+    })
 }
 
 function Test-Catalog {
@@ -665,7 +735,7 @@ function Test-Catalog {
     $seen = @{}
 
     foreach ($row in $Rows) {
-        foreach ($field in 'Id', 'Group', 'Label', 'Methods') {
+        foreach ($field in 'Id', 'Group', 'Label', 'Checks', 'Methods') {
             if (-not $row.PSObject.Properties[$field]) {
                 $problems += "row is missing $field"
             }
@@ -685,6 +755,11 @@ function Test-Catalog {
             if ([string]::IsNullOrWhiteSpace($method.Install)) {
                 $problems += "'$($row.Id)' has method with no install command"
             }
+            # A row with no commands has to be knowable some other way, or the
+            # menu can never report it as anything but missing.
+            if (@($row.Checks).Count -eq 0 -and [string]::IsNullOrWhiteSpace($method.CheckPath)) {
+                $problems += "'$($row.Id)' has no checks and its $($method.Platform) method has no CheckPath"
+            }
         }
     }
 
@@ -695,113 +770,116 @@ function Test-Catalog {
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `Invoke-Pester install/tests/catalog.Tests.ps1 -Output Detailed`
-Expected: 7 passed.
+Expected: 11 passed.
 
 - [ ] **Step 6: Write catalog.sh with the same rows**
 
-Create `install/catalog.sh`. It carries the macOS and Linux methods only — the Windows rows are unreachable from `sh`.
+Create `install/catalog.sh`. It carries the macOS and Linux methods only — the
+Windows rows are unreachable from `sh`. The fourth field of a row is its command
+list, space separated and possibly empty; the fourth field of a method is its
+`CheckPath`, also possibly empty.
 
 ```sh
 #!/bin/sh
-# id|group|label|check
+# id|group|label|checks
 catalog_rows() {
   cat <<'ROWS'
 brew|PACKAGE MANAGERS|homebrew|brew
-sdkman|PACKAGE MANAGERS|sdkman|sdk
+sdkman|PACKAGE MANAGERS|sdkman|
 git|CORE|git|git
 wezterm|CORE|wezterm (nightly)|wezterm
 neovim|CORE|neovim|nvim
 nerdfont|CORE|JetBrainsMono Nerd Font|
-toolbelt|TOOLBELT|ripgrep fd fzf bat eza zoxide lazygit gh jq|rg
-rust|TOOLCHAINS|rust|cargo
-node|TOOLCHAINS|node (fnm)|node
+toolbelt|TOOLBELT|ripgrep fd fzf bat eza zoxide lazygit gh jq|rg fd fzf bat eza zoxide lazygit gh jq
+rust|TOOLCHAINS|rust|cargo rustc
+node|TOOLCHAINS|node (fnm)|fnm
 python|TOOLCHAINS|python (uv)|uv
 jvm|TOOLCHAINS|jvm|java
-docker-desktop|CONTAINERS + AI|docker desktop|docker
+docker-desktop|CONTAINERS + AI|docker desktop|
 docker-cli|CONTAINERS + AI|docker cli|docker
 ai-clis|CONTAINERS + AI|claude-code|claude
 dotfiles|DOTFILES|clone + link configs|
 ROWS
 }
 
-# platform|manager|scope|install
+# platform|manager|scope|checkpath|install
 catalog_methods() {
   case "$1" in
     brew) cat <<'M'
-macos|self|user|/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-linux|self|user|/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+macos|self|user||/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+linux|self|user||/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 M
       ;;
     sdkman) cat <<'M'
-macos|self|user|curl -s "https://get.sdkman.io" | bash
-linux|self|user|curl -s "https://get.sdkman.io" | bash
+macos|self|user|$HOME/.sdkman/bin/sdkman-init.sh|curl -s "https://get.sdkman.io" | bash
+linux|self|user|$HOME/.sdkman/bin/sdkman-init.sh|curl -s "https://get.sdkman.io" | bash
 M
       ;;
     git) cat <<'M'
-macos|brew|user|brew install git
-linux|brew|user|brew install git
-linux|system|machine|git
+macos|brew|user||brew install git
+linux|brew|user||brew install git
+linux|system|machine||git
 M
       ;;
     wezterm) cat <<'M'
-macos|brew|user|brew install --cask wezterm@nightly --no-quarantine
-linux|github|user|curl -fsSL -o "$HOME/.local/bin/wezterm" https://github.com/wez/wezterm/releases/download/nightly/WezTerm-nightly-Ubuntu20.04.AppImage && chmod +x "$HOME/.local/bin/wezterm"
-linux|system|machine|wezterm-nightly
+macos|brew|user||brew install --cask wezterm@nightly --no-quarantine
+linux|github|user||curl -fsSL -o "$HOME/.local/bin/wezterm" https://github.com/wez/wezterm/releases/download/nightly/WezTerm-nightly-Ubuntu20.04.AppImage && chmod +x "$HOME/.local/bin/wezterm"
+linux|system|machine||wezterm-nightly
 M
       ;;
     neovim) cat <<'M'
-macos|brew|user|brew install neovim
-linux|brew|user|brew install neovim
+macos|brew|user||brew install neovim
+linux|brew|user||brew install neovim
 M
       ;;
     nerdfont) cat <<'M'
-macos|brew|user|brew install --cask font-jetbrains-mono-nerd-font
-linux|github|user|mkdir -p "$HOME/.local/share/fonts" && curl -fsSL -o /tmp/jbm.zip https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip && unzip -o /tmp/jbm.zip -d "$HOME/.local/share/fonts" && fc-cache -f
+macos|brew|user|$HOME/Library/Fonts/JetBrainsMonoNerdFont-Regular.ttf|brew install --cask font-jetbrains-mono-nerd-font
+linux|github|user|$HOME/.local/share/fonts/JetBrainsMonoNerdFont-Regular.ttf|mkdir -p "$HOME/.local/share/fonts" && curl -fsSL -o /tmp/jbm.zip https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip && unzip -o /tmp/jbm.zip -d "$HOME/.local/share/fonts" && fc-cache -f
 M
       ;;
     toolbelt) cat <<'M'
-macos|brew|user|brew install ripgrep fd fzf bat eza zoxide lazygit gh jq
-linux|brew|user|brew install ripgrep fd fzf bat eza zoxide lazygit gh jq
+macos|brew|user||brew install ripgrep fd fzf bat eza zoxide lazygit gh jq
+linux|brew|user||brew install ripgrep fd fzf bat eza zoxide lazygit gh jq
 M
       ;;
     rust) cat <<'M'
-macos|self|user|curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-linux|self|user|curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+macos|self|user||curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+linux|self|user||curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 M
       ;;
     node) cat <<'M'
-macos|brew|user|brew install fnm
-linux|brew|user|brew install fnm
+macos|brew|user||brew install fnm
+linux|brew|user||brew install fnm
 M
       ;;
     python) cat <<'M'
-macos|brew|user|brew install uv
-linux|brew|user|brew install uv
+macos|brew|user||brew install uv
+linux|brew|user||brew install uv
 M
       ;;
     jvm) cat <<'M'
-macos|sdkman|user|source "$HOME/.sdkman/bin/sdkman-init.sh" && sdk install java
-linux|sdkman|user|source "$HOME/.sdkman/bin/sdkman-init.sh" && sdk install java
+macos|sdkman|user||source "$HOME/.sdkman/bin/sdkman-init.sh" && sdk install java
+linux|sdkman|user||source "$HOME/.sdkman/bin/sdkman-init.sh" && sdk install java
 M
       ;;
     docker-desktop) cat <<'M'
-macos|brew|user|brew install --cask docker
-linux|system|machine|docker.io
+macos|brew|user|/Applications/Docker.app|brew install --cask docker
+linux|system|machine|/opt/docker-desktop|docker.io
 M
       ;;
     docker-cli) cat <<'M'
-macos|brew|user|brew install docker
-linux|brew|user|brew install docker
+macos|brew|user||brew install docker
+linux|brew|user||brew install docker
 M
       ;;
     ai-clis) cat <<'M'
-macos|npm|user|npm install -g @anthropic-ai/claude-code
-linux|npm|user|npm install -g @anthropic-ai/claude-code
+macos|npm|user||npm install -g @anthropic-ai/claude-code
+linux|npm|user||npm install -g @anthropic-ai/claude-code
 M
       ;;
     dotfiles) cat <<'M'
-macos|builtin|user|<link>
-linux|builtin|user|<link>
+macos|builtin|user|$HOME/.config/wezterm|<link>
+linux|builtin|user|$HOME/.config/wezterm|<link>
 M
       ;;
     *) return 1 ;;
@@ -836,6 +914,30 @@ t_every_row_has_methods() {
   done
 }
 it "gives every row methods" t_every_row_has_methods
+
+t_toolbelt_lists_all() {
+  checks=$(catalog_rows | awk -F'|' '$1 == "toolbelt" { print $4 }')
+  assert_contains "$checks" "bat" &&
+    assert_eq "$(printf '%s\n' "$checks" | wc -w | tr -d ' ')" "9"
+}
+it "lists every command the toolbelt installs" t_toolbelt_lists_all
+
+t_checkable() {
+  catalog_rows | while IFS='|' read -r id _ _ checks; do
+    [ -n "$checks" ] && continue
+    catalog_methods "$id" | while IFS='|' read -r _ _ _ checkpath _; do
+      [ -n "$checkpath" ] || { echo "$id has neither checks nor a checkpath" >&2; return 1; }
+    done || return 1
+  done
+}
+it "can tell whether every row is installed" t_checkable
+
+t_docker_rows_differ() {
+  desktop=$(catalog_rows | awk -F'|' '$1 == "docker-desktop" { print $4 }')
+  cli=$(catalog_rows | awk -F'|' '$1 == "docker-cli" { print $4 }')
+  assert_eq "$desktop" "" && assert_eq "$cli" "docker"
+}
+it "does not let the two docker rows answer for each other" t_docker_rows_differ
 ```
 
 - [ ] **Step 8: Run both suites**
@@ -854,7 +956,12 @@ Rows are data, one per tool, each listing per-platform methods with
 their manager and scope. Package managers come first so a bare machine
 can bootstrap one, and linking comes last. WezTerm is pinned to nightly
 on all three platforms; the jvm row prefers sdkman and falls back to
-scoop's temurin on Windows."
+scoop's temurin on Windows.
+
+A row carries every command it provides rather than one sentinel, so a
+half-installed toolbelt cannot report itself complete, and the rows that
+install no command at all -- the font, sdkman's shell function, Docker
+Desktop, the links themselves -- are known by a path on each method."
 ```
 
 ---
@@ -1101,8 +1208,15 @@ membership rather than inferred from a failed command."
 - Produces:
   - `Resolve-Source($Row, $Environment, [scriptblock] $WingetScopeProbe) -> hashtable` with `Method` (the chosen method or `$null`), `Alternatives` (array), `Reason` (string, set only when `Method` is `$null`).
   - `Test-WingetUserScope([string] $Id) -> bool` — the real probe, running `winget show --scope user --id <id>` and returning false when the output reports no applicable installer.
-  - `Get-CatalogView($Rows, $Environment, $WingetScopeProbe, [scriptblock] $InstalledProbe) -> object[]` — each row gains `Resolved`, `Alternatives`, `Reason`, `Installed`, `Selected`.
-  - `resolve_source <id>` in `resolver.sh` printing `platform|manager|scope|install` for the winner, or nothing plus a reason on stderr.
+  - `Expand-InstallPath([string] $Path) -> string` — replaces `$HOME` in a catalog path with the real profile directory. Catalog paths are single-quoted data, so nothing expands until asked.
+  - `Test-RowStatus($Row, $Method, [scriptblock] $InstalledProbe, [scriptblock] $PathProbe) -> hashtable` with `Status` (`installed|partial|missing`) and `Missing` (string[] — the checks that did not pass). Task 7 calls this again after an install to decide whether the row succeeded.
+  - `Get-CatalogView($Rows, $Environment, $WingetScopeProbe, [scriptblock] $InstalledProbe, [scriptblock] $PathProbe) -> object[]` — each row gains `Resolved`, `Alternatives`, `Reason`, `Status`, `Missing`, `Selected`.
+  - `resolve_source <id>` in `resolver.sh` printing `platform|manager|scope|checkpath|install` for the winner, or nothing plus a reason in `RESOLVE_REASON`.
+  - `row_status <checks> <checkpath>` in `resolver.sh` printing `installed`, `partial` or `missing`, and setting `ROW_MISSING` to the space-separated checks that failed.
+
+`Status` replaces the earlier `Installed` boolean. A row that provides nine
+commands can be neither plainly installed nor plainly missing, and the case
+matters: partial is the state a machine sits in after the catalog grows a tool.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1128,6 +1242,9 @@ BeforeAll {
         Os = 'windows'; Arch = 'AMD64'; Privilege = 'standard'
         Managers = @('self', 'builtin', 'scoop')
     }
+
+    $script:NothingInstalled = { $false }
+    $script:NoPaths = { $false }
 }
 
 Describe 'Resolve-Source' {
@@ -1189,22 +1306,74 @@ Describe 'Resolve-Source' {
     }
 }
 
+Describe 'Test-RowStatus' {
+    It 'calls a row installed when every check passes' {
+        $status = Test-RowStatus (Get-Row 'git') $null { $true } $script:NoPaths
+        $status.Status | Should -Be 'installed'
+        $status.Missing | Should -BeNullOrEmpty
+    }
+
+    It 'calls a row partial when only some checks pass' {
+        $probe = { param($check) $check -eq 'rg' }
+        $status = Test-RowStatus (Get-Row 'toolbelt') $null $probe $script:NoPaths
+        $status.Status | Should -Be 'partial'
+        $status.Missing | Should -Contain 'bat'
+        $status.Missing | Should -Not -Contain 'rg'
+    }
+
+    It 'calls a row missing when nothing passes' {
+        $status = Test-RowStatus (Get-Row 'toolbelt') $null $script:NothingInstalled $script:NoPaths
+        $status.Status | Should -Be 'missing'
+        $status.Missing.Count | Should -Be 9
+    }
+
+    It 'reads a path for a row that installs no command' {
+        $row = Get-Row 'dotfiles'
+        $method = $row.Methods | Where-Object Platform -eq 'windows'
+        $status = Test-RowStatus $row $method $script:NothingInstalled { $true }
+        $status.Status | Should -Be 'installed'
+    }
+
+    It 'reports a path row as missing when the path is absent' {
+        $row = Get-Row 'nerdfont'
+        $method = $row.Methods | Where-Object Platform -eq 'windows'
+        $status = Test-RowStatus $row $method $script:NothingInstalled { $false }
+        $status.Status | Should -Be 'missing'
+    }
+
+    It 'expands $HOME in a catalog path before probing it' {
+        $seen = $null
+        $row = Get-Row 'sdkman'
+        $method = $row.Methods | Where-Object Platform -eq 'windows'
+        Test-RowStatus $row $method $script:NothingInstalled { param($p) $script:seen = $p; $true } | Out-Null
+        $script:seen | Should -Not -Match '\$HOME'
+        $script:seen | Should -Match 'sdkman-init'
+    }
+}
+
 Describe 'Get-CatalogView' {
     It 'marks an installed row and leaves it deselected' {
-        $view = Get-CatalogView $script:Rows $script:StandardUser { $false } { param($check) $check -eq 'git' }
+        $view = Get-CatalogView $script:Rows $script:StandardUser { $false } { param($check) $check -eq 'git' } $script:NoPaths
         $git = $view | Where-Object Id -eq 'git'
-        $git.Installed | Should -BeTrue
-        $git.Selected  | Should -BeFalse
+        $git.Status   | Should -Be 'installed'
+        $git.Selected | Should -BeFalse
     }
 
     It 'preselects a viable, uninstalled row' {
-        $view = Get-CatalogView $script:Rows $script:StandardUser { $false } { $false }
+        $view = Get-CatalogView $script:Rows $script:StandardUser { $false } $script:NothingInstalled $script:NoPaths
         $wez = $view | Where-Object Id -eq 'wezterm'
         $wez.Selected | Should -BeTrue
     }
 
+    It 'preselects a partial row, because that is where the work is' {
+        $view = Get-CatalogView $script:Rows $script:StandardUser { $false } { param($check) $check -eq 'rg' } $script:NoPaths
+        $belt = $view | Where-Object Id -eq 'toolbelt'
+        $belt.Status   | Should -Be 'partial'
+        $belt.Selected | Should -BeTrue
+    }
+
     It 'never selects a disabled row' {
-        $view = Get-CatalogView $script:Rows $script:StandardUser { $false } { $false }
+        $view = Get-CatalogView $script:Rows $script:StandardUser { $false } $script:NothingInstalled $script:NoPaths
         $docker = $view | Where-Object Id -eq 'docker-desktop'
         $docker.Selected | Should -BeFalse
         $docker.Reason   | Should -Not -BeNullOrEmpty
@@ -1232,6 +1401,12 @@ function Get-WingetId {
     param([Parameter(Mandatory)] [string] $Install)
     if ($Install -match '--id\s+(\S+)') { return $Matches[1] }
     return $null
+}
+
+function Expand-InstallPath {
+    param([string] $Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+    return $Path.Replace('$HOME', [Environment]::GetFolderPath('UserProfile'))
 }
 
 function Resolve-Source {
@@ -1281,28 +1456,61 @@ function Resolve-Source {
     }
 }
 
+function Test-RowStatus {
+    param(
+        [Parameter(Mandatory)] $Row,
+        $Method,
+        [scriptblock] $InstalledProbe = { param($check) $check -and (Test-CommandExists $check) },
+        [scriptblock] $PathProbe = { param($path) Test-Path -LiteralPath $path }
+    )
+
+    $missing = @()
+    $total = 0
+
+    foreach ($check in @($Row.Checks)) {
+        $total++
+        if (-not (& $InstalledProbe $check)) { $missing += $check }
+    }
+
+    if ($Method -and -not [string]::IsNullOrWhiteSpace($Method.CheckPath)) {
+        $total++
+        $path = Expand-InstallPath $Method.CheckPath
+        if (-not (& $PathProbe $path)) { $missing += $path }
+    }
+
+    # Nothing to go on. Treated as missing so the row is still offered, never
+    # as installed, which would silently drop it.
+    if ($total -eq 0) { return @{ Status = 'missing'; Missing = @() } }
+
+    if ($missing.Count -eq 0)      { return @{ Status = 'installed'; Missing = @() } }
+    if ($missing.Count -lt $total) { return @{ Status = 'partial'; Missing = $missing } }
+    return @{ Status = 'missing'; Missing = $missing }
+}
+
 function Get-CatalogView {
     param(
         [Parameter(Mandatory)] $Rows,
         [Parameter(Mandatory)] $Environment,
         [scriptblock] $WingetScopeProbe = { param($id) Test-WingetUserScope $id },
-        [scriptblock] $InstalledProbe = { param($check) $check -and (Test-CommandExists $check) }
+        [scriptblock] $InstalledProbe = { param($check) $check -and (Test-CommandExists $check) },
+        [scriptblock] $PathProbe = { param($path) Test-Path -LiteralPath $path }
     )
 
     return @($Rows | ForEach-Object {
         $resolution = Resolve-Source $_ $Environment $WingetScopeProbe
-        $installed = [bool] (& $InstalledProbe $_.Check)
+        $status = Test-RowStatus $_ $resolution.Method $InstalledProbe $PathProbe
 
         [pscustomobject] @{
             Id           = $_.Id
             Group        = $_.Group
             Label        = $_.Label
-            Check        = $_.Check
+            Checks       = $_.Checks
             Resolved     = $resolution.Method
             Alternatives = $resolution.Alternatives
             Reason       = $resolution.Reason
-            Installed    = $installed
-            Selected     = (-not $installed) -and ($null -ne $resolution.Method)
+            Status       = $status.Status
+            Missing      = $status.Missing
+            Selected     = ($status.Status -ne 'installed') -and ($null -ne $resolution.Method)
         }
     })
 }
@@ -1311,7 +1519,7 @@ function Get-CatalogView {
 - [ ] **Step 4: Run it to verify it passes**
 
 Run: `Invoke-Pester install/tests/resolver.Tests.ps1 -Output Detailed`
-Expected: 13 passed.
+Expected: 20 passed.
 
 - [ ] **Step 5: Write resolver.sh**
 
@@ -1319,8 +1527,8 @@ Create `install/lib/resolver.sh`:
 
 ```sh
 #!/bin/sh
-# resolve_source <id> -> prints platform|manager|scope|install of the winner.
-# On failure prints nothing and sets RESOLVE_REASON.
+# resolve_source <id> -> prints platform|manager|scope|checkpath|install of the
+# winner. On failure prints nothing and sets RESOLVE_REASON.
 
 resolve_source() {
   id="$1"
@@ -1330,7 +1538,7 @@ resolve_source() {
   saw_machine=0
   saw_platform=0
 
-  while IFS='|' read -r platform manager scope install; do
+  while IFS='|' read -r platform manager scope checkpath install; do
     [ "$platform" = "$ENV_OS" ] || continue
     saw_platform=1
     [ "$scope" = "machine" ] && saw_machine=1
@@ -1345,9 +1553,9 @@ resolve_source() {
     fi
 
     if [ "$scope" = "user" ] && [ -z "$user_pick" ]; then
-      user_pick="$platform|$manager|$scope|$install"
+      user_pick="$platform|$manager|$scope|$checkpath|$install"
     elif [ "$scope" = "machine" ] && [ -z "$machine_pick" ]; then
-      machine_pick="$platform|$manager|$scope|$install"
+      machine_pick="$platform|$manager|$scope|$checkpath|$install"
     fi
   done <<EOF
 $(catalog_methods "$id")
@@ -1374,6 +1582,48 @@ EOF
     RESOLVE_REASON="no package manager available for this row"
   fi
   return 1
+}
+
+# Catalog paths carry a literal $HOME so the data file stays inert. This is the
+# one place it expands.
+expand_path() {
+  eval "printf '%s' \"$1\""
+}
+
+# row_status <checks> <checkpath> -> prints installed|partial|missing and sets
+# ROW_MISSING to the checks that did not pass. The command prober is
+# ROW_CHECK_CMD so tests can replace it; it defaults to command -v.
+ROW_CHECK_CMD="command -v"
+ROW_CHECK_PATH="test -e"
+
+row_status() {
+  checks="$1"
+  checkpath="$2"
+  ROW_MISSING=""
+  total=0
+  missing=0
+
+  for check in $checks; do
+    total=$((total + 1))
+    if ! $ROW_CHECK_CMD "$check" >/dev/null 2>&1; then
+      missing=$((missing + 1))
+      ROW_MISSING="${ROW_MISSING}${ROW_MISSING:+ }$check"
+    fi
+  done
+
+  if [ -n "$checkpath" ]; then
+    total=$((total + 1))
+    expanded=$(expand_path "$checkpath")
+    if ! $ROW_CHECK_PATH "$expanded" 2>/dev/null; then
+      missing=$((missing + 1))
+      ROW_MISSING="${ROW_MISSING}${ROW_MISSING:+ }$expanded"
+    fi
+  fi
+
+  if [ "$total" -eq 0 ]; then printf 'missing\n'; return 0; fi
+  if [ "$missing" -eq 0 ]; then printf 'installed\n'; return 0; fi
+  if [ "$missing" -lt "$total" ]; then printf 'partial\n'; return 0; fi
+  printf 'missing\n'
 }
 ```
 
@@ -1419,6 +1669,53 @@ t_user_scope_wins_when_root() {
   assert_contains "$(resolve_source git)" "brew"
 }
 it "still prefers user scope when running as root" t_user_scope_wins_when_root
+
+echo "row_status"
+
+# Stand-ins for the real probes: rg is the only command present and no path is.
+fake_check() { [ "$1" = "rg" ]; }
+fake_path_yes() { true; }
+fake_path_no() { false; }
+
+t_status_installed() {
+  ROW_CHECK_CMD=fake_check
+  assert_eq "$(row_status 'rg' '')" "installed"
+}
+it "calls a row installed when every check passes" t_status_installed
+
+t_status_partial() {
+  ROW_CHECK_CMD=fake_check
+  result=$(row_status 'rg fd bat' '')
+  assert_eq "$result" "partial" && assert_contains "$ROW_MISSING" "bat"
+}
+it "calls a half-installed row partial" t_status_partial
+
+t_status_missing() {
+  ROW_CHECK_CMD=fake_check
+  assert_eq "$(row_status 'fd bat' '')" "missing"
+}
+it "calls a row missing when nothing passes" t_status_missing
+
+t_status_path() {
+  ROW_CHECK_CMD=fake_check
+  ROW_CHECK_PATH=fake_path_yes
+  assert_eq "$(row_status '' '$HOME/.config/wezterm')" "installed"
+  ROW_CHECK_PATH="test -e"
+}
+it "reads a path for a row that installs no command" t_status_path
+
+t_status_expands_home() {
+  ROW_CHECK_CMD=fake_check
+  ROW_CHECK_PATH=fake_path_no
+  row_status '' '$HOME/.sdkman/bin/sdkman-init.sh' >/dev/null
+  ROW_CHECK_PATH="test -e"
+  case "$ROW_MISSING" in
+    *'$HOME'*) return 1 ;;
+    *sdkman-init*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+it "expands HOME before probing a path" t_status_expands_home
 ```
 
 - [ ] **Step 7: Run both suites**
@@ -1436,7 +1733,13 @@ The ladder tries winget user scope, then scoop, then the tool's own
 installer, then winget machine scope, and disables the row with a
 reason when nothing fits. winget's user scope is probed at run time
 because it is per-manifest, not per-package-manager. User scope wins
-even when elevated so a machine resolves identically either way."
+even when elevated so a machine resolves identically either way.
+
+A row reports installed, partial or missing rather than a boolean. A row
+that provides nine commands is regularly neither wholly present nor
+wholly absent, and partial is the state a machine sits in whenever the
+catalog grows a tool. Partial rows arrive selected: they are the rows
+with work left."
 ```
 
 ---
@@ -1450,11 +1753,26 @@ even when elevated so a machine resolves identically either way."
 - Modify: `install/tests/run.sh`
 
 **Interfaces:**
-- Consumes: the view from Task 5.
+- Consumes: the catalog view from Task 5 — `Id`, `Group`, `Label`, `Resolved`, `Alternatives`, `Reason`, `Status`, `Missing`, `Selected`.
 - Produces:
-  - `Format-Menu($View, $Environment, [int] $Cursor) -> string[]` — the whole screen as lines, including the header, the disabled banner, group headings, and the key legend. Pure.
-  - `Invoke-MenuKey($View, [int] $Cursor, [string] $Key) -> hashtable` with `View`, `Cursor`, `Done` (bool), `Cancelled` (bool). Handles `up`, `down`, `space`, `a`, `n`, `g`, `s`, `enter`, `q`.
-  - `render_menu` and `menu_key` in `ui.sh` with the same semantics over a `MENU_*` state string.
+  - `Format-Menu($View, $Environment, [int] $Cursor) -> string[]` — the whole screen as lines. Renders nothing itself.
+  - `Invoke-MenuKey($View, [int] $Cursor, [string] $Key) -> hashtable` with `View`, `Cursor`, `Done`, `Cancelled`.
+  - `render_menu <state> <os> <arch> <privilege> <managers> <cursor>` and `menu_key <state> <cursor> <key>` in `ui.sh`.
+
+**The POSIX state record.** One line per row, twelve fields, `install` last
+because it is the only field that may itself contain a `|`:
+
+```
+selected|id|group|label|manager|scope|reason|status|missing|checks|checkpath|install
+```
+
+`status` is `installed`, `partial` or `missing`. `missing` is the space-separated
+list of checks that did not pass, so the menu can say how much of a row is left
+without probing anything. `checks` and `checkpath` are carried so that Task 7 can
+re-probe a row after installing it without going back to the catalog. Every
+function that reads a record reads all twelve fields: reading fewer silently
+lands the remainder in the last variable, which is how a record read one field
+short turns `status` into `missing|brew install …`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1467,14 +1785,21 @@ BeforeAll {
     function New-View {
         @(
             [pscustomobject] @{ Id='scoop'; Group='PACKAGE MANAGERS'; Label='scoop'
+                Checks=@('scoop')
                 Resolved=@{Manager='self';Scope='user'}; Alternatives=@(); Reason=$null
-                Installed=$true; Selected=$false }
+                Status='installed'; Missing=@(); Selected=$false }
             [pscustomobject] @{ Id='wezterm'; Group='CORE'; Label='wezterm (nightly)'
+                Checks=@('wezterm')
                 Resolved=@{Manager='scoop';Scope='user'}; Alternatives=@(@{Manager='winget';Scope='machine'})
-                Reason=$null; Installed=$false; Selected=$true }
+                Reason=$null; Status='missing'; Missing=@('wezterm'); Selected=$true }
+            [pscustomobject] @{ Id='toolbelt'; Group='TOOLBELT'; Label='ripgrep fd fzf bat eza zoxide lazygit gh jq'
+                Checks=@('rg','fd','fzf','bat','eza','zoxide','lazygit','gh','jq')
+                Resolved=@{Manager='scoop';Scope='user'}; Alternatives=@(); Reason=$null
+                Status='partial'; Missing=@('bat','eza'); Selected=$true }
             [pscustomobject] @{ Id='docker-desktop'; Group='CONTAINERS + AI'; Label='docker desktop'
+                Checks=@()
                 Resolved=$null; Alternatives=@(); Reason='needs admin'
-                Installed=$false; Selected=$false }
+                Status='missing'; Missing=@('docker'); Selected=$false }
         )
     }
 
@@ -1497,6 +1822,11 @@ Describe 'Format-Menu' {
     It 'renders an installed row as already installed and not as a checkbox' {
         $line = (Format-Menu (New-View) $script:Env 0) | Where-Object { $_ -match 'scoop\s' } | Select-Object -First 1
         $line | Should -Match 'already installed'
+    }
+
+    It 'says how much of a partial row is missing' {
+        $line = (Format-Menu (New-View) $script:Env 0) | Where-Object { $_ -match 'ripgrep' } | Select-Object -First 1
+        $line | Should -Match '2 of 9 missing'
     }
 
     It 'marks the selected row with an x and the disabled row with a dash' {
@@ -1530,8 +1860,8 @@ Describe 'Invoke-MenuKey' {
 
     It 'refuses to toggle a disabled row' {
         $view = New-View
-        $result = Invoke-MenuKey $view 2 'space'
-        $result.View[2].Selected | Should -BeFalse
+        $result = Invoke-MenuKey $view 3 'space'
+        $result.View[3].Selected | Should -BeFalse
     }
 
     It 'refuses to toggle an installed row' {
@@ -1540,11 +1870,20 @@ Describe 'Invoke-MenuKey' {
         $result.View[0].Selected | Should -BeFalse
     }
 
-    It 'selects every enabled, uninstalled row with a' {
+    It 'lets a partial row be toggled, because it still has work' {
+        $view = New-View
+        $result = Invoke-MenuKey $view 2 'space'
+        $result.View[2].Selected | Should -BeFalse
+        $again = Invoke-MenuKey $result.View 2 'space'
+        $again.View[2].Selected | Should -BeTrue
+    }
+
+    It 'selects every enabled row that is not already installed with a' {
         $view = New-View
         $result = Invoke-MenuKey $view 0 'a'
         $result.View[1].Selected | Should -BeTrue
-        $result.View[2].Selected | Should -BeFalse
+        $result.View[2].Selected | Should -BeTrue
+        $result.View[3].Selected | Should -BeFalse
     }
 
     It 'clears everything with n' {
@@ -1560,8 +1899,8 @@ Describe 'Invoke-MenuKey' {
     }
 
     It 'wraps the cursor at both ends' {
-        (Invoke-MenuKey (New-View) 0 'up').Cursor   | Should -Be 2
-        (Invoke-MenuKey (New-View) 2 'down').Cursor | Should -Be 0
+        (Invoke-MenuKey (New-View) 0 'up').Cursor   | Should -Be 3
+        (Invoke-MenuKey (New-View) 3 'down').Cursor | Should -Be 0
     }
 
     It 'finishes on enter and cancels on q' {
@@ -1610,15 +1949,22 @@ function Format-Menu {
             $lines += $group
         }
 
-        $marker = if ($row.Installed) { '✓' }
+        $marker = if ($row.Status -eq 'installed') { '✓' }
                   elseif ($null -eq $row.Resolved) { '-' }
                   elseif ($row.Selected) { 'x' }
                   else { ' ' }
 
         $pointer = if ($i -eq $Cursor) { '>' } else { ' ' }
 
-        $detail = if ($row.Installed) { 'already installed' }
+        # A partial row says how much of it is missing. "2 of 9 missing" is the
+        # difference between a row worth re-running and one already done.
+        $detail = if ($row.Status -eq 'installed') { 'already installed' }
                   elseif ($null -eq $row.Resolved) { "$($row.Reason) — disabled" }
+                  elseif ($row.Status -eq 'partial') {
+                      $total = @($row.Checks).Count
+                      if ($row.Resolved.CheckPath) { $total++ }
+                      "$($row.Resolved.Manager) · $($row.Resolved.Scope) · $(@($row.Missing).Count) of $total missing"
+                  }
                   else { "$($row.Resolved.Manager) · $($row.Resolved.Scope)" }
 
         $lines += ('{0} [{1}] {2,-34} {3}' -f $pointer, $marker, $row.Label, $detail)
@@ -1637,7 +1983,8 @@ function Invoke-MenuKey {
     )
 
     $result = @{ View = $View; Cursor = $Cursor; Done = $false; Cancelled = $false }
-    $canSelect = { param($row) (-not $row.Installed) -and ($null -ne $row.Resolved) }
+    # Partial rows are selectable: they are the rows with work left.
+    $canSelect = { param($row) ($row.Status -ne 'installed') -and ($null -ne $row.Resolved) }
 
     switch ($Key) {
         'up'    { $result.Cursor = if ($Cursor -le 0) { $View.Count - 1 } else { $Cursor - 1 } }
@@ -1675,14 +2022,18 @@ function Invoke-MenuKey {
 }
 ```
 
+`Format-Menu` counts a row's checks from what the view already carries, so the
+renderer never reaches back into the catalog for them.
+
 - [ ] **Step 4: Run it to verify it passes**
 
 Run: `Invoke-Pester install/tests/ui.Tests.ps1 -Output Detailed`
-Expected: 15 passed.
+Expected: 17 passed.
 
 - [ ] **Step 5: Write ui.sh**
 
-Create `install/lib/ui.sh`. The POSIX menu state is a newline-separated string of `selected|id|group|label|manager|scope|reason|installed` records, which keeps it assignable from a subshell.
+Create `install/lib/ui.sh`. The state is a newline-separated string of the
+twelve-field records described above, which keeps it assignable from a subshell.
 
 ```sh
 #!/bin/sh
@@ -1704,29 +2055,35 @@ render_menu() {
 
   group=""
   index=0
-  printf '%s\n' "$state" | while IFS='|' read -r sel id grp label manager scope reason installed; do
-    [ -n "$id" ] || continue
-    if [ "$grp" != "$group" ]; then
-      printf '%s\n' "$grp"
-      group="$grp"
-    fi
+  printf '%s\n' "$state" |
+    while IFS='|' read -r sel id grp label manager scope reason status missing checks checkpath install; do
+      [ -n "$id" ] || continue
+      if [ "$grp" != "$group" ]; then
+        printf '%s\n' "$grp"
+        group="$grp"
+      fi
 
-    if [ "$installed" = "1" ]; then marker="✓"
-    elif [ -n "$reason" ];   then marker="-"
-    elif [ "$sel" = "1" ];   then marker="x"
-    else marker=" "
-    fi
+      if [ "$status" = "installed" ]; then marker="✓"
+      elif [ -n "$reason" ];          then marker="-"
+      elif [ "$sel" = "1" ];          then marker="x"
+      else marker=" "
+      fi
 
-    if [ "$index" = "$cursor" ]; then pointer=">"; else pointer=" "; fi
+      if [ "$index" = "$cursor" ]; then pointer=">"; else pointer=" "; fi
 
-    if [ "$installed" = "1" ]; then detail="already installed"
-    elif [ -n "$reason" ];   then detail="$reason — disabled"
-    else detail="$manager · $scope"
-    fi
+      if [ "$status" = "installed" ]; then detail="already installed"
+      elif [ -n "$reason" ];          then detail="$reason — disabled"
+      elif [ "$status" = "partial" ]; then
+        total=$(printf '%s' "$checks" | wc -w | tr -d ' ')
+        [ -n "$checkpath" ] && total=$((total + 1))
+        gone=$(printf '%s' "$missing" | wc -w | tr -d ' ')
+        detail="$manager · $scope · $gone of $total missing"
+      else detail="$manager · $scope"
+      fi
 
-    printf '%s [%s] %-34s %s\n' "$pointer" "$marker" "$label" "$detail"
-    index=$((index + 1))
-  done
+      printf '%s [%s] %-34s %s\n' "$pointer" "$marker" "$label" "$detail"
+      index=$((index + 1))
+    done
 
   printf '\n space toggle · a all · n none · g group · s cycle source · d dry-run · enter install · q quit\n'
 }
@@ -1745,11 +2102,11 @@ menu_key() {
     q)     MENU_CANCELLED=1 ;;
     space)
       state=$(printf '%s\n' "$state" | awk -F'|' -v OFS='|' -v c="$cursor" '
-        NR-1 == c && $7 == "" && $8 != "1" { $1 = ($1 == "1" ? "0" : "1") } { print }')
+        NR-1 == c && $7 == "" && $8 != "installed" { $1 = ($1 == "1" ? "0" : "1") } { print }')
       ;;
     a)
       state=$(printf '%s\n' "$state" | awk -F'|' -v OFS='|' '
-        $7 == "" && $8 != "1" { $1 = "1" } { print }')
+        $7 == "" && $8 != "installed" { $1 = "1" } { print }')
       ;;
     n)
       state=$(printf '%s\n' "$state" | awk -F'|' -v OFS='|' '{ $1 = "0"; print }')
@@ -1760,6 +2117,10 @@ menu_key() {
 }
 ```
 
+Rebuilding a record with `awk -v OFS='|'` is safe even when the install command
+contains a `|`: awk splits it into extra fields and rejoins them with the same
+separator, so the line comes back byte for byte.
+
 - [ ] **Step 6: Add POSIX UI cases**
 
 Insert into `install/tests/run.sh` before `harness_summary`:
@@ -1769,9 +2130,10 @@ Insert into `install/tests/run.sh` before `harness_summary`:
 
 echo "menu"
 
-STATE='0|scoop|PACKAGE MANAGERS|scoop|self|user||1
-1|wezterm|CORE|wezterm (nightly)|scoop|user||0
-0|docker-desktop|CONTAINERS + AI|docker desktop|||needs sudo|0'
+STATE='0|scoop|PACKAGE MANAGERS|scoop|self|user||installed||scoop||curl get.scoop.sh | sh
+1|wezterm|CORE|wezterm (nightly)|scoop|user||missing|wezterm|wezterm||brew install --cask wezterm@nightly
+1|toolbelt|TOOLBELT|ripgrep fd bat|brew|user||partial|bat|rg fd bat||brew install ripgrep fd bat
+0|docker-desktop|CONTAINERS + AI|docker desktop|||needs sudo|missing|/opt/docker-desktop||/opt/docker-desktop|docker.io'
 
 t_render_priv() {
   assert_contains "$(render_menu "$STATE" linux x86_64 standard "brew npm" 0)" "standard"
@@ -1788,6 +2150,19 @@ t_render_installed() {
 }
 it "marks an installed row" t_render_installed
 
+t_render_partial() {
+  assert_contains "$(render_menu "$STATE" linux x86_64 standard "brew npm" 0)" "1 of 3 missing"
+}
+it "says how much of a partial row is left" t_render_partial
+
+t_render_survives_pipes_in_install() {
+  # The scoop row's install command contains a pipe; the record must still
+  # parse, so the row is not rendered as though it were missing.
+  line=$(render_menu "$STATE" linux x86_64 standard "brew npm" 0 | grep 'scoop ')
+  assert_contains "$line" "already installed"
+}
+it "parses a record whose install command contains a pipe" t_render_survives_pipes_in_install
+
 t_toggle() {
   new=$(menu_key "$STATE" 1 space)
   assert_contains "$(printf '%s\n' "$new" | sed -n 2p)" "0|wezterm"
@@ -1795,20 +2170,27 @@ t_toggle() {
 it "toggles the row under the cursor" t_toggle
 
 t_no_toggle_disabled() {
-  new=$(menu_key "$STATE" 2 space)
-  assert_contains "$(printf '%s\n' "$new" | sed -n 3p)" "0|docker-desktop"
+  new=$(menu_key "$STATE" 3 space)
+  assert_contains "$(printf '%s\n' "$new" | sed -n 4p)" "0|docker-desktop"
 }
 it "refuses to toggle a disabled row" t_no_toggle_disabled
 
+t_toggle_partial() {
+  new=$(menu_key "$STATE" 2 space)
+  assert_contains "$(printf '%s\n' "$new" | sed -n 3p)" "0|toolbelt"
+}
+it "lets a partial row be toggled" t_toggle_partial
+
 t_select_all() {
   new=$(menu_key "$STATE" 0 a)
-  assert_contains "$(printf '%s\n' "$new" | sed -n 3p)" "0|docker-desktop"
+  assert_contains "$(printf '%s\n' "$new" | sed -n 4p)" "0|docker-desktop" &&
+    assert_contains "$(printf '%s\n' "$new" | sed -n 1p)" "0|scoop"
 }
-it "select-all skips disabled rows" t_select_all
+it "select-all skips disabled and installed rows" t_select_all
 
 t_wrap() {
   menu_key "$STATE" 0 up >/dev/null
-  assert_eq "$MENU_CURSOR" "2"
+  assert_eq "$MENU_CURSOR" "3"
 }
 it "wraps the cursor" t_wrap
 ```
@@ -1828,7 +2210,14 @@ Format-Menu returns lines and Invoke-MenuKey returns new state, so the
 whole interface is asserted in tests without a terminal. Installed and
 disabled rows cannot be selected by space, select-all, or group toggle,
 which is the property that keeps a disabled row from being installed by
-a stray keystroke."
+a stray keystroke.
+
+A row renders in three states rather than two. A partial row shows how
+much of it is missing and can be selected, since it is exactly the row
+with work left. The POSIX record carries its checks and its path so the
+execution phase can re-probe a row without consulting the catalog, and
+every reader reads all twelve fields: reading fewer lands the remainder
+in the last variable and quietly corrupts the status."
 ```
 
 ---
@@ -1842,11 +2231,19 @@ a stray keystroke."
 - Modify: `install/tests/run.sh`
 
 **Interfaces:**
-- Consumes: the view from Task 5.
+- Consumes: the view from Task 5 (`Selected`, `Status`, `Checks`, `Missing`, `Resolved`), and `Test-RowStatus` / `row_status` from the same task.
 - Produces:
-  - `Invoke-Rows($View, [scriptblock] $Runner, [switch] $DryRun) -> hashtable` with `Succeeded`, `Skipped`, `Failed` (each an array of `@{ Id; Command; Error }`), and `NeedsElevation` (bool). `$Runner` is called as `& $Runner $command` and must throw on failure.
+  - `Invoke-Rows($View, [scriptblock] $Runner, [switch] $DryRun, [scriptblock] $StatusProbe) -> hashtable` with `Succeeded`, `Skipped`, `Failed` (each an array of `@{ Id; Command; Error; Missing }`), and `NeedsElevation` (bool). `$Runner` is called as `& $Runner $command`. `$StatusProbe` is called as `& $StatusProbe $row` after the command and returns the same `@{ Status; Missing }` shape `Test-RowStatus` does; it defaults to `Test-RowStatus $row $row.Resolved`.
   - `Format-Summary($Result) -> string[]`.
-  - `run_rows` and `format_summary` in `exec.sh` with the same semantics.
+  - `run_rows` and `format_summary` in `exec.sh` with the same semantics. `run_rows` expects `row_status` from `resolver.sh` to be sourced; the entry points source both.
+
+**A row succeeds when its checks pass afterwards, not when its command exits
+zero.** Re-running `scoop install main/ripgrep main/bat` where ripgrep is already
+present exits non-zero, and judging by exit code would report a failure for a run
+that did exactly what was asked — on every partial row, on every run. The exit
+code and the captured output become the *reason* attached to a failure instead.
+The reverse case matters too: a command that exits zero while leaving its tools
+absent is a failure, and only re-probing catches it.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1858,22 +2255,29 @@ BeforeAll {
 
     function New-View {
         @(
-            [pscustomobject] @{ Id='scoop'; Label='scoop'; Selected=$true; Installed=$false
+            [pscustomobject] @{ Id='scoop'; Label='scoop'; Selected=$true; Status='missing'
+                Checks=@('scoop'); Missing=@('scoop')
                 Resolved=@{ Manager='self'; Scope='user'; Install='install-scoop' } }
-            [pscustomobject] @{ Id='wezterm'; Label='wezterm'; Selected=$true; Installed=$false
+            [pscustomobject] @{ Id='wezterm'; Label='wezterm'; Selected=$true; Status='missing'
+                Checks=@('wezterm'); Missing=@('wezterm')
                 Resolved=@{ Manager='scoop'; Scope='user'; Install='install-wezterm' } }
-            [pscustomobject] @{ Id='neovim'; Label='neovim'; Selected=$false; Installed=$false
+            [pscustomobject] @{ Id='neovim'; Label='neovim'; Selected=$false; Status='missing'
+                Checks=@('nvim'); Missing=@('nvim')
                 Resolved=@{ Manager='scoop'; Scope='user'; Install='install-neovim' } }
-            [pscustomobject] @{ Id='docker'; Label='docker'; Selected=$true; Installed=$false
+            [pscustomobject] @{ Id='docker'; Label='docker'; Selected=$true; Status='missing'
+                Checks=@('docker'); Missing=@('docker')
                 Resolved=@{ Manager='winget'; Scope='machine'; Install='install-docker' } }
         )
     }
+
+    # Everything the run touches ends up installed unless a test says otherwise.
+    $script:AllGood = { param($row) @{ Status = 'installed'; Missing = @() } }
 }
 
 Describe 'Invoke-Rows' {
     It 'runs only the selected rows, in catalog order' {
         $ran = [System.Collections.ArrayList]::new()
-        Invoke-Rows (New-View) { param($cmd) [void] $ran.Add($cmd) } | Out-Null
+        Invoke-Rows (New-View) { param($cmd) [void] $ran.Add($cmd) } -StatusProbe $script:AllGood | Out-Null
         $ran | Should -Be @('install-scoop', 'install-wezterm', 'install-docker')
     }
 
@@ -1884,7 +2288,12 @@ Describe 'Invoke-Rows' {
             [void] $ran.Add($cmd)
             if ($cmd -eq 'install-wezterm') { throw 'boom' }
         }
-        $result = Invoke-Rows (New-View) $runner
+        $probe = {
+            param($row)
+            if ($row.Id -eq 'wezterm') { @{ Status = 'missing'; Missing = @('wezterm') } }
+            else { @{ Status = 'installed'; Missing = @() } }
+        }
+        $result = Invoke-Rows (New-View) $runner -StatusProbe $probe
         $ran.Count           | Should -Be 3
         $result.Failed.Count | Should -Be 1
         $result.Failed[0].Id | Should -Be 'wezterm'
@@ -1892,30 +2301,62 @@ Describe 'Invoke-Rows' {
         $result.Succeeded.Count | Should -Be 2
     }
 
+    It 'counts a row that ends up installed even when the command exits non-zero' {
+        # scoop refuses to reinstall what is already there; the tools are
+        # present afterwards, which is what was asked for.
+        $runner = { param($cmd) throw "'ripgrep' is already installed" }
+        $result = Invoke-Rows (New-View) $runner -StatusProbe $script:AllGood
+        $result.Succeeded.Count | Should -Be 3
+        $result.Failed.Count    | Should -Be 0
+    }
+
+    It 'fails a row whose command succeeded but whose checks still do not pass' {
+        $probe = { param($row) @{ Status = 'partial'; Missing = @('bat') } }
+        $result = Invoke-Rows (New-View) { } -StatusProbe $probe
+        $result.Failed.Count      | Should -Be 3
+        $result.Failed[0].Missing | Should -Contain 'bat'
+        $result.Failed[0].Error   | Should -Match 'still missing'
+    }
+
     It 'runs nothing under dry run but reports what it would run' {
         $ran = [System.Collections.ArrayList]::new()
-        $result = Invoke-Rows (New-View) { param($cmd) [void] $ran.Add($cmd) } -DryRun
+        $result = Invoke-Rows (New-View) { param($cmd) [void] $ran.Add($cmd) } -DryRun -StatusProbe $script:AllGood
         $ran.Count | Should -Be 0
         $result.Succeeded.Count | Should -Be 3
     }
 
+    It 'never probes under dry run, because nothing has changed' {
+        $probed = 0
+        $probe = { param($row) $script:probed++; @{ Status = 'installed'; Missing = @() } }
+        Invoke-Rows (New-View) { } -DryRun -StatusProbe $probe | Out-Null
+        $script:probed | Should -Be 0
+    }
+
     It 'flags that elevation will be needed before running anything' {
-        $result = Invoke-Rows (New-View) { } -DryRun
+        $result = Invoke-Rows (New-View) { } -DryRun -StatusProbe $script:AllGood
         $result.NeedsElevation | Should -BeTrue
     }
 
     It 'does not flag elevation when no machine-scope row is selected' {
         $view = New-View
         ($view | Where-Object Id -eq 'docker').Selected = $false
-        $result = Invoke-Rows $view { } -DryRun
+        $result = Invoke-Rows $view { } -DryRun -StatusProbe $script:AllGood
         $result.NeedsElevation | Should -BeFalse
     }
 
     It 'skips a row that is already installed even if selected' {
         $view = New-View
-        ($view | Where-Object Id -eq 'scoop').Installed = $true
-        $result = Invoke-Rows $view { } -DryRun
+        ($view | Where-Object Id -eq 'scoop').Status = 'installed'
+        $result = Invoke-Rows $view { } -DryRun -StatusProbe $script:AllGood
         $result.Skipped.Id | Should -Contain 'scoop'
+    }
+
+    It 'still runs a partial row' {
+        $view = New-View
+        ($view | Where-Object Id -eq 'scoop').Status = 'partial'
+        $ran = [System.Collections.ArrayList]::new()
+        Invoke-Rows $view { param($cmd) [void] $ran.Add($cmd) } -StatusProbe $script:AllGood | Out-Null
+        $ran | Should -Contain 'install-scoop'
     }
 }
 
@@ -1924,7 +2365,7 @@ Describe 'Format-Summary' {
         $result = @{
             Succeeded = @(@{ Id='scoop'; Command='install-scoop' })
             Skipped   = @()
-            Failed    = @(@{ Id='wezterm'; Command='install-wezterm'; Error='boom' })
+            Failed    = @(@{ Id='wezterm'; Command='install-wezterm'; Error='boom'; Missing=@('wezterm') })
             NeedsElevation = $false
         }
         $text = (Format-Summary $result) -join "`n"
@@ -1932,6 +2373,16 @@ Describe 'Format-Summary' {
         $text | Should -Match 'boom'
         $text | Should -Match '1 installed'
         $text | Should -Match '1 failed'
+    }
+
+    It 'lists what is still missing after a failure' {
+        $result = @{
+            Succeeded = @()
+            Skipped   = @()
+            Failed    = @(@{ Id='toolbelt'; Command='install-belt'; Error='still missing'; Missing=@('bat','eza') })
+            NeedsElevation = $false
+        }
+        (Format-Summary $result) -join "`n" | Should -Match 'bat, eza'
     }
 }
 ```
@@ -1950,7 +2401,8 @@ function Invoke-Rows {
     param(
         [Parameter(Mandatory)] $View,
         [Parameter(Mandatory)] [scriptblock] $Runner,
-        [switch] $DryRun
+        [switch] $DryRun,
+        [scriptblock] $StatusProbe = { param($row) Test-RowStatus $row $row.Resolved }
     )
 
     $selected = @($View | Where-Object Selected)
@@ -1964,12 +2416,12 @@ function Invoke-Rows {
     }
 
     foreach ($row in $selected) {
-        if ($row.Installed) {
-            $result.Skipped += @{ Id = $row.Id; Command = $null; Error = $null }
+        if ($row.Status -eq 'installed') {
+            $result.Skipped += @{ Id = $row.Id; Command = $null; Error = $null; Missing = @() }
             continue
         }
         if (-not $row.Resolved) {
-            $result.Skipped += @{ Id = $row.Id; Command = $null; Error = 'no viable source' }
+            $result.Skipped += @{ Id = $row.Id; Command = $null; Error = 'no viable source'; Missing = @($row.Missing) }
             continue
         }
 
@@ -1977,15 +2429,25 @@ function Invoke-Rows {
 
         if ($DryRun) {
             Write-Host "would run: $command"
-            $result.Succeeded += @{ Id = $row.Id; Command = $command; Error = $null }
+            $result.Succeeded += @{ Id = $row.Id; Command = $command; Error = $null; Missing = @() }
             continue
         }
 
-        try {
-            & $Runner $command
-            $result.Succeeded += @{ Id = $row.Id; Command = $command; Error = $null }
-        } catch {
-            $result.Failed += @{ Id = $row.Id; Command = $command; Error = $_.Exception.Message }
+        # The runner's own failure is recorded but does not decide anything: a
+        # manager that refuses to reinstall an already-present tool exits
+        # non-zero on a run that did what was asked.
+        $runError = $null
+        try { & $Runner $command } catch { $runError = $_.Exception.Message }
+
+        $after = & $StatusProbe $row
+
+        if ($after.Status -eq 'installed') {
+            $result.Succeeded += @{ Id = $row.Id; Command = $command; Error = $null; Missing = @() }
+        } else {
+            $reason = if ($runError) { $runError } else { "still missing after install" }
+            $result.Failed += @{
+                Id = $row.Id; Command = $command; Error = $reason; Missing = @($after.Missing)
+            }
         }
     }
 
@@ -2005,6 +2467,9 @@ function Format-Summary {
         $lines += "  failed: $($failure.Id)"
         $lines += "    command: $($failure.Command)"
         $lines += "    error:   $($failure.Error)"
+        if (@($failure.Missing).Count -gt 0) {
+            $lines += "    missing: $(@($failure.Missing) -join ', ')"
+        }
     }
 
     return $lines
@@ -2014,7 +2479,7 @@ function Format-Summary {
 - [ ] **Step 4: Run it to verify it passes**
 
 Run: `Invoke-Pester install/tests/exec.Tests.ps1 -Output Detailed`
-Expected: 7 passed.
+Expected: 12 passed.
 
 - [ ] **Step 5: Write exec.sh**
 
@@ -2023,29 +2488,29 @@ Create `install/lib/exec.sh`:
 ```sh
 #!/bin/sh
 # run_rows <state> <runner> <dry_run>
-# state records: selected|id|group|label|manager|scope|reason|installed|install
-# Sets RUN_OK, RUN_SKIP, RUN_FAIL (counts) and RUN_FAILURES (id\tcommand\terror lines).
+# state records:
+#   selected|id|group|label|manager|scope|reason|status|missing|checks|checkpath|install
+# Sets RUN_OK, RUN_SKIP, RUN_FAIL (counts) and RUN_FAILURES (id\tcommand\terror
+# lines). Expects row_status from resolver.sh; ROW_STATUS_FN allows tests to
+# replace it.
+
+ROW_STATUS_FN=row_status
 
 run_rows() {
   state="$1"; runner="$2"; dry="$3"
   RUN_OK=0; RUN_SKIP=0; RUN_FAIL=0; RUN_FAILURES=""; RUN_NEEDS_ELEVATION=0
 
-  printf '%s\n' "$state" | while IFS='|' read -r sel id grp label manager scope reason installed install; do
-    [ "$sel" = "1" ] || continue
-    [ "$scope" = "machine" ] && RUN_NEEDS_ELEVATION=1
-  done
-
-  # The loop above runs in a subshell, so recompute in the parent.
+  # Decided before the first command rather than partway through.
   case "$(printf '%s\n' "$state" | awk -F'|' '$1 == "1" && $6 == "machine"')" in
     "") RUN_NEEDS_ELEVATION=0 ;;
     *)  RUN_NEEDS_ELEVATION=1 ;;
   esac
 
   OLD_IFS="$IFS"
-  while IFS='|' read -r sel id grp label manager scope reason installed install; do
+  while IFS='|' read -r sel id grp label manager scope reason status missing checks checkpath install; do
     [ "$sel" = "1" ] || continue
 
-    if [ "$installed" = "1" ] || [ -n "$reason" ]; then
+    if [ "$status" = "installed" ] || [ -n "$reason" ]; then
       RUN_SKIP=$((RUN_SKIP + 1))
       continue
     fi
@@ -2057,9 +2522,15 @@ run_rows() {
     fi
 
     if err=$("$runner" "$install" 2>&1); then
+      err=""
+    fi
+
+    after=$("$ROW_STATUS_FN" "$checks" "$checkpath")
+    if [ "$after" = "installed" ]; then
       RUN_OK=$((RUN_OK + 1))
     else
       RUN_FAIL=$((RUN_FAIL + 1))
+      [ -n "$err" ] || err="still missing after install: $ROW_MISSING"
       RUN_FAILURES="$RUN_FAILURES$id	$install	$err
 "
     fi
@@ -2088,39 +2559,61 @@ Insert into `install/tests/run.sh` before `harness_summary`:
 
 echo "run_rows"
 
-EXEC_STATE='1|scoop|PM|scoop|self|user||0|install-scoop
-1|wezterm|CORE|wezterm|brew|user||0|install-wezterm
-0|neovim|CORE|neovim|brew|user||0|install-neovim
-1|docker|AI|docker|system|machine||0|install-docker'
+EXEC_STATE='1|scoop|PM|scoop|self|user||missing|scoop|scoop||install-scoop
+1|wezterm|CORE|wezterm|brew|user||missing|wezterm|wezterm||install-wezterm
+0|neovim|CORE|neovim|brew|user||missing|nvim|nvim||install-neovim
+1|docker|AI|docker|system|machine||missing|docker|docker||install-docker'
 
 fake_runner() { echo "ran $1" >> "$RUN_LOG"; }
 failing_runner() { [ "$1" != "install-wezterm" ] || { echo "boom" >&2; return 1; }; }
+status_all_good() { ROW_MISSING=""; printf 'installed\n'; }
+status_never_good() { ROW_MISSING="bat"; printf 'missing\n'; }
 
 t_runs_selected() {
   RUN_LOG=$(mktemp)
+  ROW_STATUS_FN=status_all_good
   run_rows "$EXEC_STATE" fake_runner 0
   assert_eq "$(wc -l < "$RUN_LOG" | tr -d ' ')" "3"
 }
 it "runs only the selected rows" t_runs_selected
 
 t_continues_after_failure() {
+  RUN_LOG=$(mktemp)
+  ROW_STATUS_FN=status_never_good
   run_rows "$EXEC_STATE" failing_runner 0
-  assert_eq "$RUN_FAIL" "1"
+  assert_eq "$RUN_FAIL" "3"
 }
 it "reports a failure without aborting" t_continues_after_failure
 
+t_exit_code_does_not_decide() {
+  RUN_LOG=$(mktemp)
+  ROW_STATUS_FN=status_all_good
+  run_rows "$EXEC_STATE" failing_runner 0
+  assert_eq "$RUN_FAIL" "0" && assert_eq "$RUN_OK" "3"
+}
+it "counts a row whose checks pass even when the command failed" t_exit_code_does_not_decide
+
 t_dry_run() {
   RUN_LOG=$(mktemp)
+  ROW_STATUS_FN=status_all_good
   run_rows "$EXEC_STATE" fake_runner 1 >/dev/null
   assert_eq "$(wc -c < "$RUN_LOG" | tr -d ' ')" "0"
 }
 it "runs nothing under dry run" t_dry_run
 
 t_elevation_flag() {
+  ROW_STATUS_FN=status_all_good
   run_rows "$EXEC_STATE" fake_runner 1 >/dev/null
   assert_eq "$RUN_NEEDS_ELEVATION" "1"
 }
 it "flags that elevation is needed" t_elevation_flag
+
+t_skips_installed() {
+  ROW_STATUS_FN=status_all_good
+  run_rows "$(printf '%s\n' "$EXEC_STATE" | sed '1s/|missing|/|installed|/')" fake_runner 1 >/dev/null
+  assert_eq "$RUN_SKIP" "1"
+}
+it "skips a row that is already installed" t_skips_installed
 ```
 
 - [ ] **Step 7: Run both suites**
@@ -2138,7 +2631,14 @@ The runner is injected, so ordering, dry run, and failure handling are
 all asserted without installing anything. A failing row is captured and
 the run continues; the summary prints the exact command that failed so
 it can be repeated by hand. Whether elevation will be needed is decided
-before the first command rather than partway through."
+before the first command rather than partway through.
+
+A row is judged by whether its checks pass afterwards rather than by the
+exit code its command returned. Package managers refuse to reinstall what
+is already present and exit non-zero doing so, which would have failed
+every partial row on every run; and a command that exits zero while
+leaving its tools absent is a failure that only re-probing catches. The
+exit code survives as the reason attached to a failure."
 ```
 
 ---
@@ -2457,7 +2957,9 @@ if ($problems) { throw "catalog is invalid:`n" + ($problems -join "`n") }
 $view = Get-CatalogView $catalog $environment
 
 if ($options.All) {
-    foreach ($row in $view) { if (-not $row.Installed -and $row.Resolved) { $row.Selected = $true } }
+    foreach ($row in $view) {
+        if ($row.Status -ne 'installed' -and $row.Resolved) { $row.Selected = $true }
+    }
 } elseif ($options.Only) {
     foreach ($row in $view) { $row.Selected = $row.Id -in $options.Only }
 } elseif (-not [Console]::IsInputRedirected) {
@@ -2505,7 +3007,7 @@ Format-Summary $result | Write-Host
 
 Run: `pwsh -NoProfile -File install.ps1 --all --dry-run`
 
-Expected: the probe summary, then one `would run:` line per selected row, then `N installed, M skipped, 0 failed`. Nothing is installed. Confirm by eye that `wezterm` resolves through `scoop` with `versions/wezterm-nightly`, and that already-installed rows are skipped.
+Expected: the probe summary, then one `would run:` line per selected row, then `N installed, M skipped, 0 failed`. Nothing is installed. Confirm by eye that `wezterm` resolves through `scoop` with `versions/wezterm-nightly`, that already-installed rows are skipped, and that any row reported as partial names how much of it is missing.
 
 - [ ] **Step 3: Verify the no-tty refusal**
 
@@ -2554,25 +3056,30 @@ fi
 
 detect_environment
 
+# One record per row:
+#   selected|id|group|label|manager|scope|reason|status|missing|checks|checkpath|install
 build_state() {
-  catalog_rows | while IFS='|' read -r id grp label check; do
+  catalog_rows | while IFS='|' read -r id grp label checks; do
+    checkpath=""
     if method=$(resolve_source "$id"); then
       manager=$(printf '%s' "$method" | cut -d'|' -f2)
       scope=$(printf '%s' "$method" | cut -d'|' -f3)
-      install=$(printf '%s' "$method" | cut -d'|' -f4-)
+      checkpath=$(printf '%s' "$method" | cut -d'|' -f4)
+      install=$(printf '%s' "$method" | cut -d'|' -f5-)
       reason=""
     else
       manager=""; scope=""; install=""; reason="$RESOLVE_REASON"
     fi
 
-    installed=0
-    if [ -n "$check" ] && command -v "$check" >/dev/null 2>&1; then installed=1; fi
+    status=$(row_status "$checks" "$checkpath")
+    missing="$ROW_MISSING"
 
     selected=0
-    if [ "$installed" = "0" ] && [ -z "$reason" ]; then selected=1; fi
+    if [ "$status" != "installed" ] && [ -z "$reason" ]; then selected=1; fi
 
-    printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
-      "$selected" "$id" "$grp" "$label" "$manager" "$scope" "$reason" "$installed" "$install"
+    printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+      "$selected" "$id" "$grp" "$label" "$manager" "$scope" "$reason" \
+      "$status" "$missing" "$checks" "$checkpath" "$install"
   done
 }
 
@@ -2583,7 +3090,7 @@ if [ "$ARG_ONLY" != "" ]; then
     { $1 = (index(only, "," $2 ",") > 0) ? "1" : "0"; print }')
 elif [ "$ARG_ALL" = "1" ]; then
   STATE=$(printf '%s\n' "$STATE" | awk -F'|' -v OFS='|' '
-    $7 == "" && $8 != "1" { $1 = "1" } { print }')
+    $7 == "" && $8 != "installed" { $1 = "1" } { print }')
 elif [ -t 0 ] || [ -r /dev/tty ]; then
   cursor=0
   while true; do
@@ -2621,15 +3128,72 @@ fi
 format_summary
 ```
 
-- [ ] **Step 5: Verify the shell entry point**
+- [ ] **Step 5: Verify the shell entry point under Git Bash**
 
 Run: `& 'C:\Program Files\Git\bin\bash.exe' install.sh --all --dry-run`
 
-Expected: the probe summary and `would run:` lines. Git Bash reports itself as a Linux-like environment, so the rows resolve through the Linux methods; that is fine for a syntax and flow check. Real macOS and Linux behaviour is unverified until run there, which the README states.
+Expected: the probe summary and `would run:` lines. Git Bash reports itself as a Linux-like environment, so the rows resolve through the Linux methods; this is a syntax and flow check, not a package-manager one.
 
 Run: `& 'C:\Program Files\Git\bin\bash.exe' -c "./install.sh < /dev/null"` and confirm the no-tty refusal.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Verify install.sh on real Linux, in WSL**
+
+This is the step that turns "the POSIX half is untested" into a claim with
+evidence behind it. WSL Ubuntu-24.04 is a real Linux with real apt; everything
+below mutates that distro alone and never touches Windows.
+
+Clone into the distro's own filesystem rather than running from `/mnt/c`, so
+line endings, permissions and paths are all genuinely Linux:
+
+```bash
+wsl -d Ubuntu-24.04 -- git clone /mnt/c/Users/arthu/.dotfiles "$HOME/.dotfiles"
+```
+
+Run 1 — every row resolved, nothing touched:
+
+```bash
+wsl -d Ubuntu-24.04 -- sh -c 'cd ~/.dotfiles && sh install.sh --all --dry-run'
+```
+
+Expected: a `would run:` line per selected row and `0 failed`. Confirm that
+`wezterm` resolves to the nightly AppImage, and that rows needing sudo are
+disabled with a reason rather than hidden.
+
+Run 2 — a live install through apt:
+
+```bash
+wsl -d Ubuntu-24.04 -- sh -c 'cd ~/.dotfiles && sh install.sh --only git,neovim --yes'
+```
+
+Expected: `git` is already present in that distro and is skipped as installed;
+`neovim` is absent and is installed. One run therefore covers both paths.
+Confirm afterwards with `wsl -d Ubuntu-24.04 -- nvim --version`.
+
+Run 3 — the links, twice:
+
+```bash
+wsl -d Ubuntu-24.04 -- sh -c 'cd ~/.dotfiles && sh install.sh --only dotfiles --yes'
+wsl -d Ubuntu-24.04 -- sh -c 'cd ~/.dotfiles && sh install.sh --only dotfiles --yes'
+```
+
+Expected: the first run creates `~/.config/wezterm` and `~/.config/nvim` as
+symlinks into the repo; the second reports them already linked and does **not**
+fail. Then prove the backup rule by putting a real directory in the way:
+
+```bash
+wsl -d Ubuntu-24.04 -- sh -c 'rm ~/.config/nvim && mkdir -p ~/.config/nvim && touch ~/.config/nvim/keep.lua'
+wsl -d Ubuntu-24.04 -- sh -c 'cd ~/.dotfiles && sh install.sh --only dotfiles --yes'
+wsl -d Ubuntu-24.04 -- sh -c 'ls -d ~/.config/nvim.bak-* && cat ~/.config/nvim.bak-*/keep.lua'
+```
+
+Expected: the directory is renamed to `nvim.bak-<timestamp>` with `keep.lua`
+intact, and `~/.config/nvim` is a symlink. Nothing is ever deleted.
+
+Record what actually happened in the commit message for this task, including
+anything that had to be fixed. If a run fails, fix the cause and repeat it — the
+point of this step is that the claim is earned.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add install.ps1 install.sh
@@ -2638,7 +3202,13 @@ git commit -m "feat(install): add the two entry points
 Both scripts clone and re-exec when invoked through a pipe, since the
 library is not on disk at that point. The shell version reads keys from
 /dev/tty because curl occupies stdin, and both refuse to guess when no
-terminal is attached."
+terminal is attached.
+
+install.sh was exercised on real Linux rather than only under Git Bash:
+a dry run over every row, a live apt install covering both an
+already-present row and a missing one, and the link phase run twice to
+prove that re-linking replaces rather than fails and that a real config
+directory in the way is renamed rather than removed."
 ```
 
 ---
@@ -2652,7 +3222,25 @@ terminal is attached."
 - Consumes: everything.
 - Produces: the published bootstrap instructions.
 
-- [ ] **Step 1: Add the bootstrap section to the README**
+- [ ] **Step 1: Rename the default branch to main**
+
+The one-liners below fetch from `/main/`. The repository was pushed with
+`master` as its default, so rename it before publishing URLs that depend on it,
+rather than shipping links that 404:
+
+```bash
+git branch -m master main
+git push -u origin main
+gh repo edit arthurpessoa/dotfiles --default-branch main
+git push origin --delete master
+```
+
+Confirm with `gh repo view arthurpessoa/dotfiles --json defaultBranchRef`, which
+must report `main`, and with
+`curl -fsSL -o /dev/null -w '%{http_code}' https://raw.githubusercontent.com/arthurpessoa/dotfiles/main/README.md`,
+which must report `200`.
+
+- [ ] **Step 2: Add the bootstrap section to the README**
 
 Insert after the intro in `README.md`:
 
@@ -2692,19 +3280,24 @@ The installer probes the machine, then shows a checklist:
 - `s` cycle the source for the row under the cursor
 - `d` dry run, `enter` install, `q` quit
 
-Rows already satisfied show `already installed` and are skipped, so re-running is
-a no-op. Rows with no admin-free path on a machine where you cannot elevate are
-disabled with the reason shown, never silently skipped.
+A row that is already satisfied shows `already installed` and is skipped, so
+re-running is a no-op. A row that provides several tools and has only some of
+them shows how many are missing and arrives selected, so a catalog that grows a
+tool does not leave the machine quietly behind. Rows with no admin-free path on
+a machine where you cannot elevate are disabled with the reason shown, never
+silently skipped.
 
 Non-interactive: `--all`, `--only git,wezterm,nvim`, `--yes`, `--dry-run`,
 `--scope user|machine`, `--manager NAME`. With no terminal attached the script
 exits rather than guessing.
 
-**Tested on Windows only.** The macOS and Linux paths are written against their
-package managers but have not been run on those systems.
+**Verified on Windows and on Linux.** `install.ps1` is run on Windows and
+`install.sh` on Ubuntu under WSL, including a real package install and the link
+phase. **The macOS path is unverified**: its rows are written against Homebrew
+and sdkman but have never been run on a Mac.
 ````
 
-- [ ] **Step 2: Run the full suite one last time**
+- [ ] **Step 3: Run the full suite one last time**
 
 ```powershell
 Invoke-Pester install/tests -Output Detailed
@@ -2714,17 +3307,34 @@ nvim -l wezterm/tests/run.lua
 
 Expected: all three green.
 
-- [ ] **Step 3: Prove idempotence on this machine**
+- [ ] **Step 4: Prove idempotence on this machine**
 
 Run: `pwsh -NoProfile -File install.ps1 --only dotfiles`
 
 Expected: both link targets report `already-linked`, no backup is created, and the summary reports 1 installed, 0 failed. Confirm `~/.config/wezterm` and `%LOCALAPPDATA%\nvim` still resolve into the repo afterwards.
 
-- [ ] **Step 4: Confirm the standard-user path**
+- [ ] **Step 5: Prove a partial row is reported and repaired**
+
+This machine has `rg`, `fzf` and `lazygit` but not `bat`, so the toolbelt row is
+genuinely partial rather than synthetically so.
+
+Run: `pwsh -NoProfile -File install.ps1 --dry-run`
+
+Expected: the toolbelt row renders as partial and names how many of its nine
+commands are missing, and it arrives selected.
+
+Run: `pwsh -NoProfile -File install.ps1 --only toolbelt --yes`
+
+Expected: the row installs the missing tools and is reported as installed
+afterwards even though scoop exits non-zero for the packages that were already
+there. Confirm with `bat --version`, then re-run the same command and confirm it
+now reports the row as skipped rather than failed.
+
+- [ ] **Step 6: Confirm the standard-user path**
 
 From a non-elevated shell, run `pwsh -NoProfile -File install.ps1 --dry-run` and read the banner. On this machine, confirm that `docker-desktop` either shows `already installed` (Docker Desktop is present here) or, if you test with a synthetic environment, that a machine-scope row with no user-scope alternative renders `needs admin — disabled` and is not selected.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add README.md
@@ -2732,7 +3342,8 @@ git commit -m "docs: add the bootstrap one-liners and the key legend
 
 Both the pipe form and the download-then-read form are shown, because
 piping a URL into a shell executes whatever it serves at that moment.
-States plainly that only the Windows path has been run."
+Says which platforms have actually been run: Windows and Linux under
+WSL, with macOS written but unverified."
 ```
 
 ---
@@ -2741,10 +3352,12 @@ States plainly that only the Windows path has been run."
 
 **Spec coverage.** Bootstrap one-liners → Task 10. Probe with three privilege outcomes → Task 4. Selection UI with the documented keys → Task 6. Source resolution ladder including the run-time winget user-scope probe → Task 5. Catalog with package managers as rows and wezterm pinned to nightly → Task 3. Non-interactive flags and the no-tty refusal → Tasks 2 and 9. Ordered execution with a single elevation and failure capture → Task 7. Linking with junctions and timestamped backups → Task 8. Verification steps → Tasks 9 and 10. The WezTerm configuration itself is deliberately absent; it is the first plan.
 
-**Placeholder scan.** No `TBD`, no "similar to Task N", no "add error handling". Every code step carries the code. The one deliberate uncertainty — real macOS and Linux behaviour — is stated as an untested claim in the README rather than left as a gap.
+From `docs/specs/2026-08-01-installer-amendments-design.md`: checks as a list with an optional per-method path → Task 3, consumed in Task 5. Three-valued row status → Task 5, rendered in Task 6, obeyed in Tasks 7 and 9. Success judged by re-probing rather than by exit code → Task 7. Docker rows told apart → Task 3. Linux verification executed in WSL → Task 9 Step 6, with the resulting claim in Task 10. Default branch renamed before any URL is published → Task 10 Step 1.
 
-**Type consistency.** Catalog rows expose `Id`, `Group`, `Label`, `Check`, `Methods` from Task 3, consumed by `Resolve-Source` in Task 5. `Resolve-Source` returns `@{Method; Alternatives; Reason}` in Task 5, consumed by `Get-CatalogView` in the same task and by `Format-Menu` and `Invoke-MenuKey` in Task 6 through the `Resolved`/`Alternatives`/`Reason` properties. `Invoke-Rows` in Task 7 reads `Selected`, `Installed`, and `Resolved.Install`, all of which `Get-CatalogView` sets. `Get-Environment` returns `Os`, `Arch`, `Privilege`, `Managers` in Task 4, and every later consumer uses exactly those names. The POSIX state record has the same nine fields wherever it is read: `selected|id|group|label|manager|scope|reason|installed|install`.
+**Placeholder scan.** No `TBD`, no "similar to Task N", no "add error handling". Every code step carries the code. The one deliberate uncertainty — real macOS behaviour — is stated as an untested claim in the README rather than left as a gap.
+
+**Type consistency.** Catalog rows expose `Id`, `Group`, `Label`, `Checks`, `Methods` from Task 3, and each method exposes `Platform`, `Manager`, `Scope`, `Install`, `CheckPath`, `Note`. `Resolve-Source` in Task 5 consumes them and returns `@{Method; Alternatives; Reason}`; `Test-RowStatus` in the same task returns `@{Status; Missing}` and is called again by `Invoke-Rows` in Task 7 through its injected `$StatusProbe`. `Get-CatalogView` sets `Resolved`, `Alternatives`, `Reason`, `Status`, `Missing`, `Selected`, and `Checks`, which is exactly what `Format-Menu` and `Invoke-MenuKey` read in Task 6 and what `Invoke-Rows` reads in Task 7. `Get-Environment` returns `Os`, `Arch`, `Privilege`, `Managers` in Task 4, and every later consumer uses exactly those names. `Test-CommandExists` from Task 4 is the default command probe in Task 5. `Get-LinkTargets` and `New-ConfigLink` from Task 8 are called in Task 9 with the `Target`/`Source`/`Action`/`Backup` names Task 8 defines. The POSIX state record has the same twelve fields wherever it is built or read — Tasks 6, 7 and 9 — with `install` last because it is the only field that may contain a `|`: `selected|id|group|label|manager|scope|reason|status|missing|checks|checkpath|install`.
 
 **Known gaps, carried deliberately.**
-1. The macOS and Linux installers cannot be executed on their target systems from here. Git Bash exercises the POSIX syntax and flow but not brew, sdkman, or the AppImage download.
+1. The macOS installer cannot be executed on its target system from here. Its rows are written against Homebrew and sdkman and are exercised only as syntax. Linux no longer shares this gap: Task 9 Step 6 runs `install.sh` on Ubuntu under WSL, including a real apt install and the link phase. The sdkman and AppImage rows remain unexercised even there, since the WSL runs install through apt.
 2. `install/lib/ui.sh` renders `render_menu` inside a pipeline subshell, so its `group` tracking resets per invocation rather than persisting — this is correct for a full redraw but means the function cannot be used incrementally. If partial redraws are ever wanted, the loop needs restructuring to a here-document.
