@@ -9,7 +9,7 @@ package.path = wezterm.config_dir .. "/?.lua;" .. package.path
 local config = wezterm.config_builder()
 
 local platform = require("modules.platform").current()
-local plugins = require("modules.plugins").load()
+local plugins = require("modules.plugins").load(platform)
 local activity = require("modules.activity")
 local agent = require("modules.agent")
 
