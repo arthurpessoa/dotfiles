@@ -5,7 +5,7 @@ local RESURRECT = "https://github.com/MLFlexer/resurrect.wezterm"
 local STATE_DIR = "C:/plugins/resurrect/state/"
 
 local function platform()
-  return { shell_cmd = function(command) return { "pwsh.exe", "-Command", command } end }
+  return { shell_cmd = function(command) return { "pwsh", "-Command", command } end }
 end
 
 -- Stands in for the real plugin: its init runs a broken mkdir through

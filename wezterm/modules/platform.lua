@@ -28,7 +28,7 @@ local WINDOWS_SYSINFO = table.concat({
 
 function M.shell_cmd(os_name, command)
   if os_name == "windows" then
-    return { "pwsh.exe", "-NoProfile", "-NonInteractive", "-Command", command }
+    return { "pwsh", "-NoProfile", "-NonInteractive", "-Command", command }
   end
   return { "sh", "-c", command }
 end
@@ -39,7 +39,7 @@ function M.detect(triple)
   if triple:find("windows", 1, true) then
     return {
       os = "windows",
-      default_prog = { "pwsh.exe", "-NoLogo" },
+      default_prog = { "pwsh", "-NoLogo" },
       mod_primary = "CTRL|SHIFT",
       temp_dir = env("TEMP", home),
       nvim_config_dir = env("LOCALAPPDATA", home) .. "\\nvim",
