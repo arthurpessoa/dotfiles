@@ -282,6 +282,13 @@ Added: `inactive_pane_hsb` dimming so the focused pane reads instantly, a blinki
 bar cursor with `EaseInOut` easing, and a pinned `window_frame` font and size so
 tabline's separators sit flush against the bar instead of leaving hairlines.
 
+**The bar sits at the bottom**: `tab_bar_at_bottom = true`, with
+`use_fancy_tab_bar = false` and `hide_tab_bar_if_only_one_tab = false` carried over.
+Placement is WezTerm's setting rather than tabline's, and tabline requires the retro
+tab bar in any case, so it is applied in `theme.lua` after
+`tabline.apply_to_config(config)` — the plugin sets `use_fancy_tab_bar` itself and
+must not be able to overwrite the placement afterwards.
+
 ### icons.lua
 
 One table keyed by process basename. Each entry carries a Nerd Font glyph, an
@@ -373,6 +380,9 @@ written by hand: git, agent, and the busy spinner.
 | X | `agent` (custom) |
 | Y | `cpu` + `ram` (built-in); `battery` only when the machine has one |
 | Z | `datetime` (built-in) |
+
+The bar renders at the bottom of the window, so section A sits in the bottom-left
+where a vim statusline would — which is where the LEADER indicator is most useful.
 
 **Known risk.** WezTerm repaints tab titles when the status bar ticks, which is what
 makes an animated spinner inside a tab title possible. This is verified during
