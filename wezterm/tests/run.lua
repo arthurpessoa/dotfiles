@@ -11,6 +11,7 @@ _G.assert_true = harness.assert_true
 local specs = {
   "smoke_spec",
   "icons_spec",
+  "activity_spec",
 }
 
 for _, name in ipairs(specs) do
