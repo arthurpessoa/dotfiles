@@ -5,13 +5,25 @@
 # why there is no param block and no #Requires here: both are legal only in a
 # script that is being run as a file, and piped text is not one.
 #
-# Set DOTFILES_DRY_RUN=1 to see what it would do without doing it.
+# Set DOTFILES_DRY_RUN=1 to see what it would do without doing it, and
+# DOTFILES_SKIP_TOOLS=1 to link the configs without installing anything.
 #
-# It links configuration only. Installing WezTerm, Neovim and the rest is a
-# separate installer, still to be built.
+# It links the configs and installs the command-line tools Neovim reaches for.
+# WezTerm, Neovim and the Nerd Font are not installed here; that is a larger
+# installer, still to be built.
 
 $ErrorActionPreference = 'Stop'
 $DryRun = $env:DOTFILES_DRY_RUN -eq '1'
+$SkipTools = $env:DOTFILES_SKIP_TOOLS -eq '1'
+
+# The tools LazyVim's pickers and grep depend on. Scoop first: it installs into
+# the user profile and needs no elevation. The scoop name is the package, which
+# is not always the command -- `rg` comes out of `ripgrep`.
+$Tools = @(
+    @{ Command = 'fd';  Scoop = 'main/fd';      Winget = 'sharkdp.fd' }
+    @{ Command = 'rg';  Scoop = 'main/ripgrep'; Winget = 'BurntSushi.ripgrep.MSVC' }
+    @{ Command = 'fzf'; Scoop = 'main/fzf';     Winget = 'junegunn.fzf' }
+)
 
 $RepoUrl  = 'https://github.com/arthurpessoa/dotfiles'
 $RepoRoot = Join-Path $HOME '.dotfiles'
@@ -57,6 +69,43 @@ function New-ConfigLink {
     return @{ Action = if ($backup) { 'backed-up-and-linked' } else { 'linked' }; Backup = $backup }
 }
 
+function Test-Command {
+    param([Parameter(Mandatory)] [string] $Name)
+    return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+# A tool counts as installed when its command answers afterwards, not when the
+# package manager exits zero: scoop refuses to reinstall and exits non-zero on
+# a run that was perfectly fine, and a manager can succeed while putting the
+# binary somewhere off PATH.
+function Install-Tool {
+    param(
+        [Parameter(Mandatory)] $Tool,
+        [switch] $DryRun
+    )
+
+    if (Test-Command $Tool.Command) { return 'already installed' }
+
+    $attempts = @()
+    if (Test-Command 'scoop')  { $attempts += @{ Manager = 'scoop';  Run = { scoop install $Tool.Scoop } } }
+    if (Test-Command 'winget') {
+        $attempts += @{ Manager = 'winget'; Run = {
+            winget install --id $Tool.Winget --silent --accept-package-agreements --accept-source-agreements
+        } }
+    }
+
+    if ($attempts.Count -eq 0) { return 'no scoop or winget on this machine' }
+
+    if ($DryRun) { return "would install with $($attempts[0].Manager)" }
+
+    foreach ($attempt in $attempts) {
+        try { & $attempt.Run | Out-Null } catch { }
+        if (Test-Command $Tool.Command) { return "installed with $($attempt.Manager)" }
+    }
+
+    return 'failed'
+}
+
 function Get-LinkTargets {
     param([Parameter(Mandatory)] [string] $Root)
     return @(
@@ -71,7 +120,16 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 
 if (Test-Path -LiteralPath (Join-Path $RepoRoot '.git')) {
     Write-Step "updating $RepoRoot"
-    if (-not $DryRun) { git -C $RepoRoot pull --ff-only }
+    # A pull can fail for reasons that have nothing to do with linking: local
+    # commits, a renamed upstream branch, no network. None of those are a
+    # reason to leave the configs unlinked, so the failure is reported and the
+    # run continues with whatever is already checked out.
+    if (-not $DryRun) {
+        git -C $RepoRoot pull --ff-only *> $null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Step '  could not pull; continuing with the checkout that is already there'
+        }
+    }
 } else {
     Write-Step "cloning $RepoUrl into $RepoRoot"
     if (-not $DryRun) { git clone $RepoUrl $RepoRoot }
@@ -85,6 +143,15 @@ foreach ($pair in Get-LinkTargets $RepoRoot) {
     if ($result.Backup) { Write-Step "  previous config kept at $($result.Backup)" }
 }
 
+if (-not $SkipTools) {
+    Write-Step ''
+    foreach ($tool in $Tools) {
+        $outcome = Install-Tool $tool -DryRun:$DryRun
+        Write-Step ('{0,-42} {1}' -f $tool.Command, $outcome)
+    }
+}
+
 Write-Step ''
-Write-Step 'configs linked. WezTerm and Neovim themselves are not installed by this script.'
+Write-Step 'WezTerm and Neovim themselves are not installed by this script.'
 Write-Step 'requirements: WezTerm nightly, Neovim 0.10+, JetBrainsMono Nerd Font.'
+Write-Step 'in Neovim, :checkhealth reports anything still missing.'
