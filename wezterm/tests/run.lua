@@ -14,6 +14,7 @@ local specs = {
   "activity_spec",
   "glyph_spec",
   "git_spec",
+  "agent_spec",
 }
 
 for _, name in ipairs(specs) do
