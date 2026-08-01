@@ -42,6 +42,17 @@ describe("platform.detect", function()
     local p = platform.detect("x86_64-unknown-linux-gnu")
     assert_nil(p.backdrop)
   end)
+
+  it("gives windows a two-line cpu and memory sample command", function()
+    local command = platform.detect("x86_64-pc-windows-msvc").sysinfo_command
+    assert_true(command:find("Win32_Processor", 1, true) ~= nil)
+    assert_true(command:find("Win32_OperatingSystem", 1, true) ~= nil)
+  end)
+
+  it("leaves the other platforms without a sample command", function()
+    assert_nil(platform.detect("x86_64-unknown-linux-gnu").sysinfo_command)
+    assert_nil(platform.detect("aarch64-apple-darwin").sysinfo_command)
+  end)
 end)
 
 describe("platform.shell_cmd", function()
