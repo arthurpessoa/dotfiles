@@ -6,6 +6,10 @@ local stub = {
   log_error = function() end,
 }
 
+function stub.__set_triple(triple)
+  stub.target_triple = triple
+end
+
 package.preload["wezterm"] = function() return stub end
 
 return stub
