@@ -27,6 +27,24 @@ function M.classify(deck_status, process)
   return nil
 end
 
+-- agent-deck keeps one entry per pane, each carrying a status of "working",
+-- "waiting", "idle" or "inactive". The segment follows the active pane, except
+-- that a pane waiting for input anywhere wins: that is the state that wants the
+-- user, and it is usually the tab they are not looking at.
+function M.pick(entries, active_pane_id)
+  if not entries then return nil end
+
+  local active
+  for pane_id, entry in pairs(entries) do
+    local status = entry and entry.status
+    if status == "waiting" then return "waiting" end
+    if pane_id == active_pane_id and (status == "working" or status == "idle") then
+      active = status
+    end
+  end
+  return active
+end
+
 function M.new_store()
   return { state = nil, started_at = nil, override = nil }
 end

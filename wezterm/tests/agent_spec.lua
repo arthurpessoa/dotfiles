@@ -20,6 +20,31 @@ describe("agent.classify", function()
   end)
 end)
 
+describe("agent.pick", function()
+  local function entries(map)
+    return map
+  end
+
+  it("reads the active pane's agent", function()
+    assert_eq(agent.pick(entries({ [3] = { status = "working" } }), 3), "working")
+  end)
+
+  it("prefers a pane that is waiting over the active one", function()
+    local map = entries({ [1] = { status = "working" }, [7] = { status = "waiting" } })
+    assert_eq(agent.pick(map, 1), "waiting")
+  end)
+
+  it("ignores panes agent-deck reports as inactive", function()
+    local map = entries({ [1] = { status = "inactive" }, [2] = { status = "inactive" } })
+    assert_nil(agent.pick(map, 1))
+  end)
+
+  it("survives an empty deck", function()
+    assert_nil(agent.pick({}, 1))
+    assert_nil(agent.pick(nil, 1))
+  end)
+end)
+
 describe("agent.update", function()
   it("renders working in green with a spinner", function()
     local store = agent.new_store()

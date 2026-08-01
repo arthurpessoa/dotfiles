@@ -10,6 +10,11 @@ local M = {}
 -- so it is deliberately much slower than the status tick.
 local SYSINFO_POLL_SECONDS = 10
 
+-- agent-deck reads each pane's scrollback to tell working from waiting, so it
+-- runs far slower than the status tick as well.
+local AGENT_POLL_SECONDS = 0.5
+local agent_polled_at = -math.huge
+
 -- The sysinfo poll is a single global reading, not per-pane state, so it lives
 -- here rather than in the `state` table bar.apply is handed. Both are rebuilt
 -- from scratch on every config reload.
@@ -110,6 +115,26 @@ local function refresh_sysinfo(platform)
   return sysinfo.cpu, sysinfo.ram
 end
 
+-- agent-deck holds no timer of its own unless apply_to_config installs one, and
+-- that also brings its tab titles, its right status and its own notifications.
+-- Only the detection is wanted here, so the panes are walked from this module's
+-- update-status handler instead and the plugin is left to do nothing else.
+local function refresh_agents(plugins, window, now)
+  if now - agent_polled_at < AGENT_POLL_SECONDS then return end
+  agent_polled_at = now
+  for _, tab in ipairs(window:mux_window():tabs()) do
+    for _, pane in ipairs(tab:panes()) do
+      pcall(function() plugins.agent_deck.update_pane(pane) end)
+    end
+  end
+end
+
+local function agent_states(plugins)
+  local entries
+  pcall(function() entries = plugins.agent_deck.get_all_agent_states() end)
+  return entries
+end
+
 -- tabline expects `{ "<glyph>", color = { fg = "#rrggbb" } }`; icons.lua speaks
 -- `{ glyph = ..., color = ... }`. The translation belongs here, where the rest
 -- of the presentation lives.
@@ -163,6 +188,17 @@ function M.apply(config, plugins, platform, state)
   local CPU_GLYPH = wezterm.nerdfonts.md_chip
   local RAM_GLYPH = wezterm.nerdfonts.md_memory
 
+  -- agent-deck raises its own toast the moment a pane starts waiting, and
+  -- agent.update raises one for the same transition. Its own rendering is off
+  -- for the same reason: this config draws the segment and the tab titles.
+  pcall(function()
+    plugins.agent_deck.set_config({
+      notifications = { enabled = false },
+      tab_title = { enabled = false },
+      right_status = { enabled = false },
+    })
+  end)
+
   plugins.tabline.setup({
     options = {
       icons_enabled = true,
@@ -210,8 +246,7 @@ function M.apply(config, plugins, platform, state)
       },
       tabline_x = {
         function(window, pane)
-          local deck
-          pcall(function() deck = plugins.agent_deck.get_status() end)
+          local deck = agent.pick(agent_states(plugins), pane and pane:pane_id() or nil)
           local process = pane and pane:get_foreground_process_name() or nil
           local result = agent.update(
             state.agent, agent.classify(deck, process), now_seconds(), window:is_focused())
@@ -247,6 +282,7 @@ function M.apply(config, plugins, platform, state)
 
   wezterm.on("update-status", function(window)
     local focused = window:is_focused()
+    refresh_agents(plugins, window, now_seconds())
     for _, tab in ipairs(window:mux_window():tabs_with_info()) do
       local pane = tab.tab:active_pane()
       local result = activity.update(
