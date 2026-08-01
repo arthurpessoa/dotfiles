@@ -619,12 +619,22 @@ rather than a counter, so every pane turns in lockstep."
 ### Task 4: git.lua — porcelain v2 parser and segment
 
 **Files:**
+- Create: `wezterm/modules/glyph.lua` (extracted from `icons.lua`, see Step 0)
 - Create: `wezterm/modules/git.lua`
 - Create: `wezterm/tests/git_spec.lua`
+- Modify: `wezterm/modules/icons.lua` (require the extracted helper)
 - Modify: `wezterm/tests/run.lua`
 
+**Step 0 — extract the codepoint helper.** Task 2's fix round put a `u(cp)`
+UTF-8 encoder inside `icons.lua`. This task is the second consumer, and
+`git.lua` must not depend on `icons.lua` — they are unrelated concerns. Move
+the function to `wezterm/modules/glyph.lua` exporting `glyph.u(cp)`, have
+`icons.lua` require it, and confirm the existing suite still passes before
+writing any new code. The glyph assertions added in Task 2 are what prove the
+move was lossless.
+
 **Interfaces:**
-- Consumes: nothing.
+- Consumes: `glyph.u(cp) -> string` — UTF-8 encodes a codepoint, Lua 5.1 safe.
 - Produces:
   - `git.parse(text:string) -> { branch:string|nil, oid:string|nil, detached:boolean, ahead:number, behind:number, dirty:number }`
   - `git.render(info:table|nil) -> { text:string, color:string }|nil` — nil when `info` is nil, meaning "not a repo, hide the section".
@@ -755,10 +765,16 @@ local M = {}
 
 M.POLL_SECONDS = 4
 
-local BRANCH_GLYPH = ""
-local CLEAN_GLYPH = ""
-local DIRTY_GLYPH = ""
-local AHEAD_GLYPH = ""
+-- Glyphs are built from codepoints, never written as literal characters:
+-- Private Use Area glyphs (U+E000-F8FF) get silently stripped in transit and
+-- land as empty strings. See Task 2's fix round. Derive each codepoint from
+-- wezterm.nerdfonts by name rather than typing it from memory.
+local u = require("modules.glyph").u
+
+local BRANCH_GLYPH = u(0x0)   -- nf-dev-git-branch: replace 0x0 with the real codepoint
+local CLEAN_GLYPH = u(0x0)    -- a check mark
+local DIRTY_GLYPH = u(0x0)    -- a pencil
+local AHEAD_GLYPH = u(0x0)    -- an upward arrow
 local DETACHED_GLYPH = "󰜘"
 
 local AQUA = "#7AA89F"
@@ -836,7 +852,7 @@ return M
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `nvim -l wezterm/tests/run.lua`
-Expected: PASS, 32 total.
+Expected: PASS. This task adds 11 cases, so the total is the previous run's total plus 11 — do not treat a specific absolute number as the gate; the earlier suite has grown since this plan was written.
 
 - [ ] **Step 5: Commit**
 
@@ -1034,7 +1050,10 @@ function M.update(store, state, now, focused)
     result.notify = { title = "claude", body = "waiting for input" }
   end
 
-  if previous == "working" and state ~= "working" and state ~= nil then
+  -- `waiting` is excluded deliberately: an agent that finishes a step and
+  -- immediately needs input must raise the waiting notification, not the
+  -- finished one. Without that exclusion this branch overwrites it.
+  if previous == "working" and state ~= "working" and state ~= "waiting" and state ~= nil then
     local elapsed = now - (store.started_at or now)
     if not focused then
       result.notify = {
@@ -1055,7 +1074,7 @@ return M
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `nvim -l wezterm/tests/run.lua`
-Expected: PASS, 42 total.
+Expected: PASS. This task adds 12 cases, so the total is the previous run's total plus 12 — do not treat a specific absolute number as the gate.
 
 - [ ] **Step 5: Commit**
 
@@ -1213,7 +1232,7 @@ return M
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `nvim -l wezterm/tests/run.lua`
-Expected: PASS, 48 total.
+Expected: PASS. This task adds 6 cases, so the total is the previous run's total plus 6 — do not treat a specific absolute number as the gate.
 
 - [ ] **Step 6: Write theme.lua**
 
@@ -1754,7 +1773,7 @@ return M
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `nvim -l wezterm/tests/run.lua`
-Expected: PASS, 55 total.
+Expected: PASS. This task adds 7 cases, so the total is the previous run's total plus 7 — do not treat a specific absolute number as the gate.
 
 - [ ] **Step 6: Verify the bindings in a throwaway instance**
 

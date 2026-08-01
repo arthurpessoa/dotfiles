@@ -1,0 +1,4 @@
+wezterm/local.lua
+*.bak-*
+nvim/lazy-lock.json.bak
+.superpowers/

@@ -1,0 +1,5 @@
+describe("harness", function()
+  it("compares equal values", function()
+    assert_eq(1 + 1, 2)
+  end)
+end)
