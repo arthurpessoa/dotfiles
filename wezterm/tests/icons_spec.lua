@@ -35,6 +35,13 @@ describe("icons.lookup", function()
   it("resolves a full path the same as a bare name", function()
     assert_eq(icons.lookup("C:\\bin\\cargo.exe").glyph, icons.lookup("cargo").glyph)
   end)
+
+  it("gives every entry a non-empty glyph", function()
+    for name, entry in pairs(icons.entries) do
+      assert_true(#entry.glyph > 0, "empty glyph for " .. name)
+    end
+    assert_true(#icons.FALLBACK.glyph > 0, "empty fallback glyph")
+  end)
 end)
 
 describe("icons.process_to_icon", function()
