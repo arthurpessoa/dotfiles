@@ -66,7 +66,7 @@ function M.update(store, state, now, focused)
     result.notify = { title = "claude", body = "waiting for input" }
   end
 
-  if previous == "working" and state ~= "working" and state ~= nil then
+  if previous == "working" and state ~= "working" and state ~= "waiting" and state ~= nil then
     local elapsed = now - (store.started_at or now)
     if not focused then
       result.notify = {
