@@ -1,0 +1,47 @@
+local icons = require("modules.icons")
+
+describe("icons.basename", function()
+  it("strips a windows path and the exe suffix", function()
+    assert_eq(icons.basename("C:\\Users\\a\\.cargo\\bin\\Cargo.EXE"), "cargo")
+  end)
+
+  it("strips a posix path", function()
+    assert_eq(icons.basename("/usr/local/bin/nvim"), "nvim")
+  end)
+
+  it("passes a bare name through", function()
+    assert_eq(icons.basename("pwsh"), "pwsh")
+  end)
+end)
+
+describe("icons.lookup", function()
+  it("marks build tools as busy", function()
+    assert_eq(icons.lookup("cargo").kind, "busy")
+    assert_eq(icons.lookup("gradlew").kind, "busy")
+    assert_eq(icons.lookup("docker").kind, "busy")
+  end)
+
+  it("marks shells and editors as shell", function()
+    assert_eq(icons.lookup("pwsh").kind, "shell")
+    assert_eq(icons.lookup("nvim").kind, "shell")
+  end)
+
+  it("falls back for unknown processes", function()
+    local entry = icons.lookup("some-unknown-binary")
+    assert_eq(entry.kind, "shell")
+    assert_eq(entry.glyph, icons.FALLBACK.glyph)
+  end)
+
+  it("resolves a full path the same as a bare name", function()
+    assert_eq(icons.lookup("C:\\bin\\cargo.exe").glyph, icons.lookup("cargo").glyph)
+  end)
+end)
+
+describe("icons.process_to_icon", function()
+  it("exports every entry with a glyph", function()
+    local map = icons.process_to_icon()
+    assert_true(map.cargo ~= nil)
+    assert_true(map.cargo.glyph ~= nil)
+    assert_nil(map.cargo.kind, "tabline must not receive the kind field")
+  end)
+end)
