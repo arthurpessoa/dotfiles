@@ -1,19 +1,8 @@
 local wezterm = require("wezterm")
-local icons = require("modules.icons")
 
 local M = {}
 
 local DIRECTIONS = { h = "Left", j = "Down", k = "Up", l = "Right" }
-
--- The forwarding half of smart-splits: CTRL+hjkl has to reach Neovim's own
--- window navigation when a pane is running it, and move between WezTerm panes
--- everywhere else. icons.basename already lowercases and drops ".exe", so a
--- Windows absolute path and a POSIX one answer the same.
-function M.is_nvim(process)
-  if not process then return false end
-  local name = icons.basename(process)
-  return name == "nvim" or name == "vim"
-end
 
 -- A split action carries the cwd it was built with, and the domain's default is
 -- the home directory rather than the pane's. Reading the pane needs a callback,
@@ -31,25 +20,19 @@ local function split(placement)
   end)
 end
 
-local function smart_split_nav(key)
-  return wezterm.action_callback(function(window, pane)
-    if M.is_nvim(pane:get_foreground_process_name()) then
-      window:perform_action(
-        wezterm.action.SendKey({ key = key, mods = "CTRL" }), pane)
-    else
-      window:perform_action(
-        wezterm.action.ActivatePaneDirection(DIRECTIONS[key]), pane)
-    end
-  end)
-end
-
 function M.build(mod_primary)
   local list = {}
 
+  -- Pane navigation lives entirely behind the leader, on the bare key and on
+  -- the same key with CTRL still held, so the chord works whether or not the
+  -- leader's own CTRL is released. Nothing is bound on plain CTRL+hjkl: those
+  -- belong to whatever is running in the pane -- CTRL+L clears the shell, and
+  -- Neovim gets its own window navigation back without any forwarding.
   for key, direction in pairs(DIRECTIONS) do
     table.insert(list, { key = key, mods = "LEADER",
       action = wezterm.action.ActivatePaneDirection(direction) })
-    table.insert(list, { key = key, mods = "CTRL", action = smart_split_nav(key) })
+    table.insert(list, { key = key, mods = "LEADER|CTRL",
+      action = wezterm.action.ActivatePaneDirection(direction) })
   end
 
   table.insert(list, { key = "v", mods = mod_primary, action = split("beside") })
@@ -118,8 +101,8 @@ function M.apply(config, plugins, platform)
   end
 
   -- Has to run after config.keys is populated, and its own defaults sit on
-  -- CTRL+d, CTRL+v and CTRL+h -- the last of which is smart-splits navigation.
-  -- All three move behind the leader. Its split names follow WezTerm's, so
+  -- CTRL+d, CTRL+v and CTRL+h, which would take plain CTRL keys back off the
+  -- pane. All three move behind the leader. Its split names follow WezTerm's, so
   -- hsplit -- the one that opens beside -- takes V, matching the plain splits.
   plugins.domains.apply_to_config(config, {
     keys = {

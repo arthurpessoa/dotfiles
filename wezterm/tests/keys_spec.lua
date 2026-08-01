@@ -52,10 +52,19 @@ describe("keys.build", function()
     assert_eq(performed(find(list, "h", "CTRL|SHIFT")), "SplitVertical")
   end)
 
-  it("binds smart-splits navigation on plain CTRL", function()
+  it("also navigates with CTRL still held after the leader", function()
     local list = keys.build("CTRL|SHIFT")
     for _, k in ipairs({ "h", "j", "k", "l" }) do
-      assert_true(find(list, k, "CTRL") ~= nil, "missing CTRL " .. k)
+      assert_true(find(list, k, "LEADER|CTRL") ~= nil, "missing LEADER|CTRL " .. k)
+    end
+  end)
+
+  -- CTRL+L has to reach the shell to clear it, and nothing else should be
+  -- stolen from the pane either.
+  it("leaves plain CTRL hjkl to the running program", function()
+    local list = keys.build("CTRL|SHIFT")
+    for _, k in ipairs({ "h", "j", "k", "l" }) do
+      assert_eq(find(list, k, "CTRL"), nil)
     end
   end)
 end)
@@ -130,17 +139,5 @@ describe("keys.apply", function()
     local config = applied()
     assert_eq(config.leader.key, "q")
     assert_eq(config.leader.mods, "CTRL")
-  end)
-end)
-
-describe("keys.is_nvim", function()
-  it("detects neovim regardless of path or case", function()
-    assert_true(keys.is_nvim("C:\\tools\\NVIM.EXE"))
-    assert_true(keys.is_nvim("/usr/bin/nvim"))
-  end)
-
-  it("rejects shells", function()
-    assert_eq(keys.is_nvim("pwsh"), false)
-    assert_eq(keys.is_nvim(nil), false)
   end)
 end)
