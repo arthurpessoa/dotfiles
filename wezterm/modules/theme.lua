@@ -10,10 +10,8 @@ function M.apply(config, plugins, platform)
   config.window_padding = { left = 8, right = 8, top = 8, bottom = 8 }
   config.window_decorations = "RESIZE"
 
-  if platform.os == "windows" then
-    config.win32_system_backdrop = "Acrylic"
-  elseif platform.os == "macos" then
-    config.macos_window_background_blur = 30
+  if platform.backdrop then
+    config[platform.backdrop.key] = platform.backdrop.value
   end
 
   config.inactive_pane_hsb = { saturation = 0.85, brightness = 0.75 }

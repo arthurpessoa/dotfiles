@@ -24,6 +24,7 @@ function M.detect(triple)
       temp_dir = env("TEMP", home),
       nvim_config_dir = env("LOCALAPPDATA", home) .. "\\nvim",
       shell_cmd = function(command) return M.shell_cmd("windows", command) end,
+      backdrop = { key = "win32_system_backdrop", value = "Acrylic" },
     }
   end
 
@@ -35,6 +36,7 @@ function M.detect(triple)
     temp_dir = env("TMPDIR", "/tmp"),
     nvim_config_dir = home .. "/.config/nvim",
     shell_cmd = function(command) return M.shell_cmd(os_name, command) end,
+    backdrop = os_name == "macos" and { key = "macos_window_background_blur", value = 30 } or nil,
   }
 end
 
