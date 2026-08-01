@@ -31,6 +31,9 @@ LazyVim install at `%LOCALAPPDATA%\nvim`, not under version control.
 ~/.dotfiles/
   install.ps1              Windows bootstrap
   install.sh               macOS + Linux bootstrap
+  install/
+    catalog.psd1           rows, sources, checks (PowerShell)
+    catalog.sh             the same rows (POSIX)
   README.md                one-liners + what gets installed
   .gitignore               local.lua, *.bak-*, git cache files
   wezterm/
@@ -67,23 +70,153 @@ Alongside each, the README shows the download-inspect-run form, because piping a
 URL into a shell executes whatever that URL serves at that moment with no chance to
 read it first.
 
-Both scripts perform the same five steps:
+Both scripts follow the same four phases: **probe**, **select**, **install**, **link**.
 
-1. **Detect the package manager** — `winget`, falling back to `scoop`, on Windows;
-   `brew` on macOS; `apt`, `dnf`, or `pacman` on Linux. Abort with a clear message
-   if none is found.
-2. **Install packages** — git, wezterm, neovim, and the JetBrainsMono Nerd Font.
-   Already-installed packages are skipped, not reinstalled. Nothing else: the
-   pickers used by `resurrect` and `quick_domains` are WezTerm's built-in
-   `InputSelector`, so no fuzzy finder is needed.
-3. **Clone** the repo to `~/.dotfiles`, or `git pull` if it is already there.
-4. **Link** the config directories (below).
-5. **Print** what changed, including the path of any backup it made.
+### Phase 1 — probe
 
-Scripts are idempotent: a second run on a configured machine makes no changes
-beyond a `git pull`.
+Runs before anything is drawn and prints its findings.
 
-### Linking
+- **OS and arch** — `$PSVersionTable` / `uname -sm`.
+- **Privilege**, three outcomes rather than two:
+
+  | Outcome | Detected by | Effect |
+  | --- | --- | --- |
+  | Already elevated | `IsInRole(Administrator)` / `euid 0` | every row enabled |
+  | Can elevate | account in the Administrators group; `sudo -n true` or membership of sudo/wheel | admin-only rows enabled, one elevation prompt at install time |
+  | Standard user | neither | admin-only rows disabled with the reason shown, and listed in a banner above the menu |
+
+- **Package managers present** — winget, scoop, choco; brew; apt, dnf, pacman, zypper;
+  sdkman; npm.
+
+### Phase 2 — select
+
+An ANSI checklist drawn by the script itself. No `fzf`, `gum`, or other dependency,
+because the installer has to run before anything is installed.
+
+```
+ dotfiles installer                                  Windows 11 · x64
+ privilege  standard user — no elevation path
+ managers   scoop ✓   winget ✓   choco ✗   sdkman ✗
+
+ 1 row disabled: docker desktop (needs admin)
+
+ PACKAGE MANAGERS
+  [✓] scoop                already installed
+  [✓] winget               already installed
+  [x] sdkman               get.sdkman.io · user · needs Git Bash
+ CORE
+  [✓] git                  already installed
+  [x] wezterm-nightly      scoop:versions · user      ← winget: no user scope
+  [✓] neovim               already installed
+  [x] JetBrainsMono NF     scoop:nerd-fonts · user
+ TOOLBELT
+  [x] ripgrep fd fzf bat eza zoxide lazygit gh jq     scoop:main · user
+ TOOLCHAINS
+  [x] rust                 rustup.rs · user
+  [ ] node                 fnm · user
+  [ ] python               uv · user
+  [ ] jvm                  sdkman · user             → scoop:java (temurin-lts)
+ CONTAINERS + AI
+  [-] docker desktop       needs admin — disabled
+  [x] docker cli           scoop:main · user
+  [x] claude-code          npm · user
+ DOTFILES
+  [x] clone + link configs
+
+ space toggle · a all · n none · g group · s cycle source · d dry-run · enter · q
+```
+
+Keys: `space` toggles a row, `a` selects all enabled rows, `n` clears, `g` toggles a
+whole group, `s` cycles that row's source among the viable ones for this machine,
+`d` prints the exact commands without running them, `enter` installs, `q` quits.
+
+Rows whose `check` already passes render `[✓] already installed` and are skipped, so
+a second run is a no-op. Disabled rows show why. The linking step is an ordinary row,
+so tools can be installed without touching configs, or the reverse.
+
+### Source resolution
+
+Each catalog entry lists methods as `{platform, manager, scope, install, check}`. The
+resolver picks the first viable one and offers the rest under `s`. It **prefers
+user-scope even when admin is available**, so a machine gives the same result whether
+or not the shell happens to be elevated.
+
+Windows ladder:
+
+1. `winget --scope user`, but only where the manifest actually declares user scope.
+   This is probed at run time with `winget show --scope user <id>`, never hardcoded,
+   because manifests change. Measured on 2026-08-01 with winget 1.29.280: Git.Git,
+   GitHub.cli, BurntSushi.ripgrep.MSVC, ajeetdsouza.zoxide, Schniz.fnm and astral-sh.uv
+   resolve under user scope; Neovim.Neovim, Docker.DockerDesktop and
+   EclipseAdoptium.Temurin.21.JDK are machine-only; wez.wezterm, Rustlang.Rustup and
+   DEVCOM.JetBrainsMonoNerdFont declare no scope at all and are therefore excluded by
+   *both* scope filters.
+2. `scoop`, which is user-scoped by definition. Missing buckets are added
+   automatically: `versions` for wezterm-nightly, `nerd-fonts` for the font, `java`
+   for temurin, `extras` for lazygit.
+3. The tool's own user-scope installer — rustup.rs, fnm, uv, sdkman, npm.
+4. `winget --scope machine`, only when elevation is available.
+5. Otherwise disabled, with the reason displayed.
+
+macOS and Linux use the same shape: brew → the tool's own `$HOME` installer → the
+system package manager with sudo → disabled. On Linux without sudo, brew installs to
+`~/.linuxbrew` and needs no elevation.
+
+### Catalog
+
+Package managers are rows themselves, so a bare machine can bootstrap one before
+anything else installs.
+
+| Row | Windows | macOS | Linux |
+| --- | --- | --- | --- |
+| scoop | `get.scoop.sh`, user | — | — |
+| winget | preinstalled on Win11; App Installer otherwise | — | — |
+| brew | — | `brew.sh`, `/opt/homebrew` (sudo once) or `~/homebrew` | `~/.linuxbrew`, no sudo |
+| sdkman | `get.sdkman.io` via Git Bash | `get.sdkman.io` | `get.sdkman.io` |
+| git | winget user / scoop | brew | apt·dnf·pacman / brew |
+| **wezterm** | **`scoop:versions/wezterm-nightly`** | **`brew --cask wezterm@nightly`** | **`nightly` GitHub release: AppImage without sudo, .deb/.rpm with** |
+| neovim | scoop:main | brew | brew / system |
+| JetBrainsMono NF | scoop:nerd-fonts | brew --cask | manual to `~/.local/share/fonts` |
+| toolbelt: ripgrep, fd, fzf, bat, eza, zoxide, lazygit, gh, jq | scoop | brew | brew / system |
+| rust | rustup.rs | rustup.rs | rustup.rs |
+| node | fnm | fnm | fnm |
+| python | uv | uv | uv |
+| jvm | sdkman via Git Bash, else `scoop:java/temurin-lts` | sdkman | sdkman |
+| docker desktop | winget, **admin only** | brew --cask | system, sudo |
+| docker cli | scoop:main | brew | brew / system |
+| AI CLIs: claude-code, kiro-cli, copilot-cli | npm, user | npm | npm |
+| clone + link configs | always available | | |
+
+WezTerm is pinned to nightly on every platform. The stable channel lags — scoop's
+`extras/wezterm` was still on the 2024-02-03 build as of 2026-08-01 — and the
+configuration targets current nightly behaviour.
+
+The catalog lives in one data file per shell (`install/catalog.psd1`,
+`install/catalog.sh`) carrying identical rows, so adding a tool is a data change
+rather than a code change.
+
+### Non-interactive use
+
+`curl | bash` feeds the script itself on stdin, so the selection loop reads keys from
+`/dev/tty`; PowerShell's `irm | iex` keeps the console attached and uses `ReadKey`.
+When no tty exists at all — CI, `ssh -T` — the script refuses to guess and exits
+telling you to pass a flag.
+
+Flags: `--all`, `--only git,wezterm,nvim`, `--yes`, `--dry-run`,
+`--scope user|machine`, `--manager scoop`.
+
+### Phase 3 — install
+
+Selected rows run in catalog order, so a package manager row installs before anything
+that depends on it. If any selected row needs elevation and elevation is available,
+the prompt happens once, before the first admin-only command, rather than partway
+through the run.
+
+A row that fails does not abort the run. Its error is captured, the remaining rows
+continue, and the closing summary lists successes, skips, and failures with the exact
+command that failed so it can be re-run by hand.
+
+### Phase 4 — link
 
 | Target | Points at |
 | --- | --- |
@@ -303,6 +436,20 @@ runtime; that file stays outside the repository.
 `wezterm/local.lua` is gitignored and loaded last if present. It can override any
 setting, which is where a machine-specific font size or an extra domain belongs.
 
+## Implementation order
+
+Two phases, each independently useful.
+
+1. **Configuration** — repo skeleton, linking by hand, `wezterm/` modules, the Neovim
+   two files. Ends with a working bar on this machine.
+2. **Installer** — probe, catalog, selection UI, resolver, and the README one-liners.
+   Ends with a fresh-machine bootstrap.
+
+The current machine already satisfies much of phase 2's catalog: scoop with the main,
+extras and versions buckets, `wezterm-nightly nightly-20260731`, neovim 0.12.4,
+ripgrep, fd, fzf, lazygit and nodejs. Phase 2 is therefore validated mostly through
+`--dry-run` here, and end to end on a clean machine or VM.
+
 ## Verification
 
 - `wezterm -n --config-file ~/.dotfiles/wezterm/wezterm.lua start -- pwsh` launches a
@@ -312,8 +459,15 @@ setting, which is where a machine-specific font size or an extra domain belongs.
 - A notification is confirmed by backgrounding a tab during a build longer than 30
   seconds.
 - `nvim --headless "+checkhealth smart-splits" +qa` covers the Neovim side.
-- `install.ps1` is re-run on the configured machine to prove idempotence: existing
-  directories become `.bak-<timestamp>` and no data is lost.
+- `install.ps1 --dry-run --all` prints every resolved command without running one,
+  which is how the source ladder is inspected.
+- `install.ps1` is re-run on the configured machine to prove idempotence: already
+  satisfied rows render `already installed` and are skipped, existing directories
+  become `.bak-<timestamp>`, and no data is lost.
+- The standard-user path is exercised by running the probe from a non-elevated shell
+  and confirming that docker desktop renders disabled with its reason, while
+  wezterm-nightly still resolves through scoop.
+- `--only` and the no-tty refusal are checked by piping the script with stdin closed.
 
 macOS and Linux installers are written against their package managers but can only
 be smoke-tested on Windows. Both are marked untested-on-target in the README until
