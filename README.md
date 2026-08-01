@@ -1,4 +1,5 @@
 # dotfiles
+<img width="1380" height="546" alt="Animation" src="https://github.com/user-attachments/assets/523abdf5-c291-4634-81f8-9c252e49b13b" />
 
 WezTerm and Neovim configuration for Windows, macOS, and Linux.
 
