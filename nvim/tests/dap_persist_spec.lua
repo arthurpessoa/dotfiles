@@ -68,6 +68,135 @@ describe("dap_persist.decode", function()
   end)
 end)
 
+-- These exercise M.setup() itself -- the wiring -- not the pure encode/
+-- decode/state_path functions above, which could not have caught C1: they
+-- never touch an autocmd or the VeryLazy timing bug that made restore dead
+-- on every real session. `nvim -l` never loads plugins/dap.lua (no init=,
+-- no `User LazyLoad`), so "dap" and "dap.breakpoints" are stubbed via
+-- package.preload -- real modules would not be requirable in this runner
+-- regardless of the bug under test.
+describe("dap_persist.setup wiring (C1)", function()
+  local function install_dap_stub(by_buf, calls)
+    package.preload["dap"] = function()
+      return {
+        clear_breakpoints = function()
+          calls.cleared = (calls.cleared or 0) + 1
+        end,
+      }
+    end
+    package.preload["dap.breakpoints"] = function()
+      return {
+        get = function()
+          return by_buf
+        end,
+        set = function(opts, bufnr, lnum)
+          table.insert(calls.set, { opts = opts, bufnr = bufnr, lnum = lnum })
+        end,
+      }
+    end
+  end
+
+  local function remove_dap_stub()
+    package.loaded["dap"] = nil
+    package.loaded["dap.breakpoints"] = nil
+    package.preload["dap"] = nil
+    package.preload["dap.breakpoints"] = nil
+  end
+
+  it("calls load() itself instead of waiting for VeryLazy, which has already fired", function()
+    -- This is the actual C1 regression: setup() used to register its
+    -- restore on `User VeryLazy`, an event that -- by the time setup() can
+    -- possibly run -- has already fired exactly once and will never fire
+    -- again. Nothing in this test ever fires a VeryLazy autocmd; if setup()
+    -- regresses to depending on one, `called` stays false and this times out.
+    local persist = require("util.dap_persist")
+    local orig_load = persist.load
+    local called = false
+    persist.load = function(...)
+      called = true
+    end
+
+    persist.setup()
+    vim.wait(500, function()
+      return called
+    end, 10)
+
+    persist.load = orig_load
+    assert_true(called, "setup() must reach load() on its own; nothing else will fire VeryLazy in time")
+  end)
+
+  it("registers DirChanged and VimLeavePre, and no dead VeryLazy listener", function()
+    local persist = require("util.dap_persist")
+    persist.setup()
+
+    local autocmds = vim.api.nvim_get_autocmds({ group = "DapPersist" })
+    local events = {}
+    for _, a in ipairs(autocmds) do
+      events[a.event] = (events[a.event] or 0) + 1
+      if a.event == "User" then
+        assert_true(a.pattern ~= "VeryLazy", "a User/VeryLazy autocmd is exactly the dead wiring C1 removes")
+      end
+    end
+    assert_true(events["VimLeavePre"] ~= nil, "VimLeavePre autocmd missing")
+    assert_true(events["DirChanged"] ~= nil, "DirChanged autocmd missing -- restore on project switch is absent")
+  end)
+
+  it("a save -> DirChanged -> load cycle moves breakpoints into the right project's file, not the new cwd's", function()
+    local base = (vim.fn.stdpath("run") or vim.fn.stdpath("cache")):gsub("\\", "/")
+    local root_a = base .. "/dap-persist-spec-root-a"
+    local root_b = base .. "/dap-persist-spec-root-b"
+    vim.fn.mkdir(root_a, "p")
+    vim.fn.mkdir(root_b, "p")
+    local state_dir = vim.fn.stdpath("state")
+    local file_a = require("util.dap_persist").state_path(root_a, state_dir)
+    local file_b = require("util.dap_persist").state_path(root_b, state_dir)
+    -- Clean slate: a leftover file from a previous failed run must not make
+    -- this pass for the wrong reason.
+    os.remove(file_a)
+    os.remove(file_b)
+
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_name(buf, root_a .. "/Main.java")
+    local by_buf = { [buf] = { { line = 42, condition = "x > 0" } } }
+    local calls = { set = {} }
+    install_dap_stub(by_buf, calls)
+
+    local orig_cwd = vim.uv.cwd()
+    vim.cmd("cd " .. vim.fn.fnameescape(root_a))
+
+    local persist = require("util.dap_persist")
+    persist.setup()
+    -- Let the initial vim.schedule'd load() run (root_a has no file yet, so
+    -- this is a no-op) before driving a DirChanged.
+    vim.wait(200, function()
+      return true
+    end, 10)
+
+    -- Simulate switching project mid-session, as the dashboard's Projects
+    -- key does. This must (a) persist root_a's still-in-memory breakpoint
+    -- into root_a's OWN file, not root_b's, and (b) clear the in-memory set
+    -- so it cannot bleed into root_b.
+    vim.cmd("cd " .. vim.fn.fnameescape(root_b))
+    vim.wait(200, function()
+      return vim.uv.fs_stat(file_a) ~= nil
+    end, 10)
+
+    vim.cmd("cd " .. vim.fn.fnameescape(orig_cwd))
+    remove_dap_stub()
+
+    assert_true(vim.uv.fs_stat(file_a) ~= nil, "root_a's breakpoint was never saved to root_a's file")
+    local saved = vim.json.decode(table.concat(vim.fn.readfile(file_a), "\n"))
+    assert_true(saved[root_a .. "/Main.java"] ~= nil, "root_a's file does not contain root_a's breakpoint")
+    assert_eq(saved[root_a .. "/Main.java"][1].line, 42)
+    assert_true(calls.cleared ~= nil and calls.cleared > 0, "DirChanged must clear in-memory breakpoints")
+
+    os.remove(file_a)
+    os.remove(file_b)
+    vim.fn.delete(root_a, "d")
+    vim.fn.delete(root_b, "d")
+  end)
+end)
+
 describe("dap_persist.state_path", function()
   it("puts one file per project under the state dir", function()
     local a = persist.state_path("/home/u/projects/alpha", "/state")

@@ -57,11 +57,15 @@ local function project_root()
   return vim.uv.cwd() or "."
 end
 
-local function path_for()
-  return M.state_path(project_root(), vim.fn.stdpath("state"))
+local function path_for(root)
+  return M.state_path(root or project_root(), vim.fn.stdpath("state"))
 end
 
-function M.save()
+-- Both take an optional explicit root so DirChanged can save/load a project
+-- other than the current cwd (the outgoing one, on the way out). Neither
+-- function changes behaviour for existing callers, which pass nothing and
+-- get the current cwd exactly as before.
+function M.save(root)
   local ok, breakpoints = pcall(require, "dap.breakpoints")
   if not ok then
     return
@@ -71,7 +75,7 @@ function M.save()
     return vim.api.nvim_buf_get_name(bufnr)
   end)
 
-  local path = path_for()
+  local path = path_for(root)
   vim.fn.mkdir(vim.fs.dirname(path), "p")
 
   if not next(data) then
@@ -84,8 +88,8 @@ function M.save()
   vim.fn.writefile({ vim.json.encode(data) }, path)
 end
 
-function M.load()
-  local path = path_for()
+function M.load(root)
+  local path = path_for(root)
   if not vim.uv.fs_stat(path) then
     return
   end
@@ -128,22 +132,52 @@ end
 
 function M.setup()
   local group = vim.api.nvim_create_augroup("DapPersist", { clear = true })
+  local last_root = project_root()
 
   vim.api.nvim_create_autocmd("VimLeavePre", {
     group = group,
-    callback = M.save,
-  })
-
-  -- Loading on VeryLazy rather than on VimEnter: dap must be requirable, and
-  -- the buffers the breakpoints belong to may not be open yet, which is why
-  -- load() adds them itself.
-  vim.api.nvim_create_autocmd("User", {
-    group = group,
-    pattern = "VeryLazy",
     callback = function()
-      pcall(M.load)
+      M.save(last_root)
     end,
   })
+
+  -- util.project's root is vim.uv.cwd(), so switching project mid-session
+  -- (e.g. the dashboard's Projects key) changes what project_root() returns
+  -- without dap ever clearing its in-memory breakpoints. Left unhandled, the
+  -- outgoing project's breakpoints would ride along in memory and get saved
+  -- into the INCOMING project's file the next time anything calls save() --
+  -- silently destroying the incoming project's own persisted set. Save the
+  -- outgoing root under its own file first, drop the in-memory breakpoints,
+  -- then load whatever the incoming root had saved.
+  vim.api.nvim_create_autocmd("DirChanged", {
+    group = group,
+    callback = function()
+      M.save(last_root)
+      local dap_ok, dap = pcall(require, "dap")
+      if dap_ok then
+        pcall(dap.clear_breakpoints)
+      end
+      last_root = project_root()
+      pcall(M.load, last_root)
+    end,
+  })
+
+  -- setup() is only reached from dap.lua's `User LazyLoad` handler for
+  -- nvim-dap, which by construction cannot run before `VeryLazy` already
+  -- has: lazy.nvim fires VeryLazy exactly once, vim.schedule'd right after
+  -- LazyDone+VimEnter (lazy/core/util.lua), and nvim-dap is a keys-lazy
+  -- plugin that only loads on first use of one of its keymaps -- long after
+  -- startup. Neovim also does not run autocmds registered during execution
+  -- of the very event they listen for. Hooking `User VeryLazy` here -- the
+  -- previous approach -- registered a listener for an event that had
+  -- already fired every single time, so restore never ran: a state file
+  -- seeded with a breakpoint restored 0, and the next VimLeavePre save then
+  -- overwrote it with an empty set. Load directly instead. vim.schedule
+  -- defers it past the current callback so the buffers load() adds via
+  -- bufadd/bufload aren't created mid-startup.
+  vim.schedule(function()
+    pcall(M.load, last_root)
+  end)
 end
 
 return M
