@@ -20,6 +20,7 @@ local specs = {
   "keys_spec",
   "plugins_spec",
   "bar_spec",
+  "shared_spec",
 }
 
 for _, name in ipairs(specs) do
