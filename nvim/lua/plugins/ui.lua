@@ -3,6 +3,14 @@
 -- buffers along the top because wezterm puts its own tabs at the bottom.
 local icons = require("config.icons")
 
+-- Nerd Font glyphs live in the Private Use Area and the supplementary planes;
+-- both get mangled by anything that assumes text is safe to normalise, which
+-- is exactly what happened to every literal glyph pasted into this file's
+-- first draft. Codepoints are encoded at load time instead, the same defence
+-- shared/glyph.lua exists for on the wezterm side. See that file for the
+-- Lua 5.1-safe encoder this requires.
+local u = require("glyph").u
+
 return {
   -- mini.icons is LazyVim's icon provider; these are the overrides that keep
   -- it in step with the wezterm tab bar.
@@ -24,7 +32,8 @@ return {
         always_show_bufferline = true,
         diagnostics = "nvim_lsp",
         diagnostics_indicator = function(count, level)
-          local prefix = level:match("error") and " " or " "
+          -- Same glyphs LazyVim.config.icons.diagnostics.Error/Warn use.
+          local prefix = level:match("error") and (u(0xf057) .. " ") or (u(0xf071) .. " ")
           return prefix .. count
         end,
         offsets = {
@@ -60,19 +69,21 @@ return {
           if #names == 0 then
             return ""
           end
-          return " " .. table.concat(names, " ")
+          return u(0xf233) .. " " .. table.concat(names, " ")
         end,
         color = { fg = icons.palette.aqua },
       })
 
-      -- A live debug session, so the F-keys are never a guess.
+      -- A live debug session, so the F-keys are never a guess. Same glyph
+      -- LazyVim's own (unused, since we replace lualine_x wholesale) dap
+      -- segment uses.
       table.insert(opts.sections.lualine_x, 1, {
         function()
           local ok, dap = pcall(require, "dap")
           if not ok or not dap.session() then
             return ""
           end
-          return "  " .. dap.status()
+          return u(0xf46f) .. "  " .. dap.status()
         end,
         color = { fg = icons.palette.red },
       })
@@ -81,7 +92,7 @@ return {
       table.insert(opts.sections.lualine_x, 1, {
         function()
           local reg = vim.fn.reg_recording()
-          return reg == "" and "" or ("  @" .. reg)
+          return reg == "" and "" or (u(0xeba7) .. "  @" .. reg)
         end,
         color = { fg = icons.palette.orange },
       })
@@ -126,22 +137,36 @@ return {
           -- index, so overriding this key loses every entry LazyVim shipped
           -- unless they are repeated here). Every LazyVim default -- f, n, g,
           -- r, c, s, x, l, q -- is kept; "p" (Projects) is the one addition.
+          -- Glyphs are byte-identical to LazyVim's own default list (read
+          -- from lazyvim/plugins/ui.lua, not retyped) for the eight keys we
+          -- share with it; "p" (cod-project, U+EB30) is the one addition,
+          -- verified present in the JetBrainsMono Nerd Font cmap.
           keys = {
-            { icon = " ", key = "f", desc = "Find File", action = ":lua Snacks.dashboard.pick('files')" },
-            { icon = " ", key = "n", desc = "New File", action = ":ene | startinsert" },
-            { icon = " ", key = "g", desc = "Find Text", action = ":lua Snacks.dashboard.pick('live_grep')" },
-            { icon = " ", key = "r", desc = "Recent Files", action = ":lua Snacks.dashboard.pick('oldfiles')" },
+            { icon = u(0xf002) .. " ", key = "f", desc = "Find File", action = ":lua Snacks.dashboard.pick('files')" },
+            { icon = u(0xf15b) .. " ", key = "n", desc = "New File", action = ":ene | startinsert" },
             {
-              icon = " ",
+              icon = u(0xf022) .. " ",
+              key = "g",
+              desc = "Find Text",
+              action = ":lua Snacks.dashboard.pick('live_grep')",
+            },
+            {
+              icon = u(0xf0c5) .. " ",
+              key = "r",
+              desc = "Recent Files",
+              action = ":lua Snacks.dashboard.pick('oldfiles')",
+            },
+            {
+              icon = u(0xf423) .. " ",
               key = "c",
               desc = "Config",
               action = ":lua Snacks.dashboard.pick('files', {cwd = vim.fn.stdpath('config')})",
             },
-            { icon = " ", key = "p", desc = "Projects", action = ":lua Snacks.picker.projects()" },
-            { icon = " ", key = "s", desc = "Restore Session", section = "session" },
-            { icon = " ", key = "x", desc = "Lazy Extras", action = ":LazyExtras" },
-            { icon = "󰒲 ", key = "l", desc = "Lazy", action = ":Lazy" },
-            { icon = " ", key = "q", desc = "Quit", action = ":qa" },
+            { icon = u(0xeb30) .. " ", key = "p", desc = "Projects", action = ":lua Snacks.picker.projects()" },
+            { icon = u(0xe348) .. " ", key = "s", desc = "Restore Session", section = "session" },
+            { icon = u(0xea8c) .. " ", key = "x", desc = "Lazy Extras", action = ":LazyExtras" },
+            { icon = u(0xf04b2) .. " ", key = "l", desc = "Lazy", action = ":Lazy" },
+            { icon = u(0xf426) .. " ", key = "q", desc = "Quit", action = ":qa" },
           },
         },
       },
