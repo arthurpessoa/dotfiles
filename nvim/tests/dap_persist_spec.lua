@@ -76,6 +76,55 @@ end)
 -- package.preload -- real modules would not be requirable in this runner
 -- regardless of the bug under test.
 describe("dap_persist.setup wiring (C1)", function()
+  -- Every test below calls M.setup(), which registers REAL autocmds in the
+  -- DapPersist augroup. Left unmanaged between tests, an autocmd one test
+  -- registers can survive to fire during a LATER test -- e.g. a `cd` in a
+  -- following test firing a stale DirChanged listener whose `last_root`
+  -- closure still points at whatever cwd was active when THIS test's
+  -- setup() ran, which, absent an explicit cd, is the real invocation
+  -- directory. That is not hypothetical: it happened here, on the first
+  -- version of this spec, and silently overwrote this repository's own real
+  -- dap-breakpoints state file with a later test's fixture data while
+  -- `nvim -l nvim/tests/run.lua` still reported all green.
+  --
+  -- isolated() gives every test here two independent guarantees, so a
+  -- failure in either alone still cannot touch a real file:
+  --   1. vim.fn.stdpath("state") is redirected to a fresh temp directory
+  --      for the duration of the test, so even a stale autocmd from a
+  --      PRIOR test firing here can only write inside that temp directory.
+  --   2. the DapPersist augroup is cleared when the test ends -- pass or
+  --      fail -- so no autocmd THIS test's setup() registered survives to
+  --      fire during a later one.
+  local function isolated(fn)
+    local orig_stdpath = vim.fn.stdpath
+    local tmp_state = vim.fn.tempname()
+    vim.fn.mkdir(tmp_state, "p")
+    ---@diagnostic disable-next-line: duplicate-set-field
+    vim.fn.stdpath = function(what)
+      if what == "state" then
+        return tmp_state
+      end
+      return orig_stdpath(what)
+    end
+
+    local ok, err = pcall(fn, tmp_state)
+
+    -- Flush anything the test scheduled (e.g. setup()'s own vim.schedule'd
+    -- load()) while stdpath is still redirected, so a late callback can't
+    -- land after the real path is restored below.
+    vim.wait(200, function()
+      return false
+    end, 10)
+
+    vim.fn.stdpath = orig_stdpath
+    vim.api.nvim_create_augroup("DapPersist", { clear = true })
+    vim.fn.delete(tmp_state, "rf")
+
+    if not ok then
+      error(err, 0)
+    end
+  end
+
   local function install_dap_stub(by_buf, calls)
     package.preload["dap"] = function()
       return {
@@ -104,96 +153,100 @@ describe("dap_persist.setup wiring (C1)", function()
   end
 
   it("calls load() itself instead of waiting for VeryLazy, which has already fired", function()
-    -- This is the actual C1 regression: setup() used to register its
-    -- restore on `User VeryLazy`, an event that -- by the time setup() can
-    -- possibly run -- has already fired exactly once and will never fire
-    -- again. Nothing in this test ever fires a VeryLazy autocmd; if setup()
-    -- regresses to depending on one, `called` stays false and this times out.
-    local persist = require("util.dap_persist")
-    local orig_load = persist.load
-    local called = false
-    persist.load = function(...)
-      called = true
-    end
+    isolated(function()
+      -- This is the actual C1 regression: setup() used to register its
+      -- restore on `User VeryLazy`, an event that -- by the time setup()
+      -- can possibly run -- has already fired exactly once and will never
+      -- fire again. Nothing in this test ever fires a VeryLazy autocmd; if
+      -- setup() regresses to depending on one, `called` stays false and
+      -- this times out.
+      local p = require("util.dap_persist")
+      local orig_load = p.load
+      local called = false
+      p.load = function(...)
+        called = true
+      end
 
-    persist.setup()
-    vim.wait(500, function()
-      return called
-    end, 10)
+      p.setup()
+      vim.wait(500, function()
+        return called
+      end, 10)
 
-    persist.load = orig_load
-    assert_true(called, "setup() must reach load() on its own; nothing else will fire VeryLazy in time")
+      p.load = orig_load
+      assert_true(called, "setup() must reach load() on its own; nothing else will fire VeryLazy in time")
+    end)
   end)
 
   it("registers DirChanged and VimLeavePre, and no dead VeryLazy listener", function()
-    local persist = require("util.dap_persist")
-    persist.setup()
+    isolated(function()
+      local p = require("util.dap_persist")
+      p.setup()
 
-    local autocmds = vim.api.nvim_get_autocmds({ group = "DapPersist" })
-    local events = {}
-    for _, a in ipairs(autocmds) do
-      events[a.event] = (events[a.event] or 0) + 1
-      if a.event == "User" then
-        assert_true(a.pattern ~= "VeryLazy", "a User/VeryLazy autocmd is exactly the dead wiring C1 removes")
+      local autocmds = vim.api.nvim_get_autocmds({ group = "DapPersist" })
+      local events = {}
+      for _, a in ipairs(autocmds) do
+        events[a.event] = (events[a.event] or 0) + 1
+        if a.event == "User" then
+          assert_true(a.pattern ~= "VeryLazy", "a User/VeryLazy autocmd is exactly the dead wiring C1 removes")
+        end
       end
-    end
-    assert_true(events["VimLeavePre"] ~= nil, "VimLeavePre autocmd missing")
-    assert_true(events["DirChanged"] ~= nil, "DirChanged autocmd missing -- restore on project switch is absent")
+      assert_true(events["VimLeavePre"] ~= nil, "VimLeavePre autocmd missing")
+      assert_true(events["DirChanged"] ~= nil, "DirChanged autocmd missing -- restore on project switch is absent")
+    end)
   end)
 
   it("a save -> DirChanged -> load cycle moves breakpoints into the right project's file, not the new cwd's", function()
-    local base = (vim.fn.stdpath("run") or vim.fn.stdpath("cache")):gsub("\\", "/")
-    local root_a = base .. "/dap-persist-spec-root-a"
-    local root_b = base .. "/dap-persist-spec-root-b"
-    vim.fn.mkdir(root_a, "p")
-    vim.fn.mkdir(root_b, "p")
-    local state_dir = vim.fn.stdpath("state")
-    local file_a = require("util.dap_persist").state_path(root_a, state_dir)
-    local file_b = require("util.dap_persist").state_path(root_b, state_dir)
-    -- Clean slate: a leftover file from a previous failed run must not make
-    -- this pass for the wrong reason.
-    os.remove(file_a)
-    os.remove(file_b)
+    isolated(function(tmp_state)
+      local base = (vim.fn.stdpath("run") or vim.fn.stdpath("cache")):gsub("\\", "/")
+      local root_a = base .. "/dap-persist-spec-root-a"
+      local root_b = base .. "/dap-persist-spec-root-b"
+      vim.fn.mkdir(root_a, "p")
+      vim.fn.mkdir(root_b, "p")
+      -- vim.fn.stdpath("state") is redirected to tmp_state for the duration
+      -- of this test (see isolated()), so these paths -- and everything
+      -- M.save()/M.load() touch below -- live entirely under tmp_state.
+      local file_a = require("util.dap_persist").state_path(root_a, tmp_state)
+      local file_b = require("util.dap_persist").state_path(root_b, tmp_state)
 
-    local buf = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_name(buf, root_a .. "/Main.java")
-    local by_buf = { [buf] = { { line = 42, condition = "x > 0" } } }
-    local calls = { set = {} }
-    install_dap_stub(by_buf, calls)
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_name(buf, root_a .. "/Main.java")
+      local by_buf = { [buf] = { { line = 42, condition = "x > 0" } } }
+      local calls = { set = {} }
+      install_dap_stub(by_buf, calls)
 
-    local orig_cwd = vim.uv.cwd()
-    vim.cmd("cd " .. vim.fn.fnameescape(root_a))
+      local orig_cwd = vim.uv.cwd()
+      vim.cmd("cd " .. vim.fn.fnameescape(root_a))
 
-    local persist = require("util.dap_persist")
-    persist.setup()
-    -- Let the initial vim.schedule'd load() run (root_a has no file yet, so
-    -- this is a no-op) before driving a DirChanged.
-    vim.wait(200, function()
-      return true
-    end, 10)
+      local p = require("util.dap_persist")
+      p.setup()
+      -- Let the initial vim.schedule'd load() run (root_a has no file yet,
+      -- so this is a no-op) before driving a DirChanged.
+      vim.wait(200, function()
+        return true
+      end, 10)
 
-    -- Simulate switching project mid-session, as the dashboard's Projects
-    -- key does. This must (a) persist root_a's still-in-memory breakpoint
-    -- into root_a's OWN file, not root_b's, and (b) clear the in-memory set
-    -- so it cannot bleed into root_b.
-    vim.cmd("cd " .. vim.fn.fnameescape(root_b))
-    vim.wait(200, function()
-      return vim.uv.fs_stat(file_a) ~= nil
-    end, 10)
+      -- Simulate switching project mid-session, as the dashboard's Projects
+      -- key does. This must (a) persist root_a's still-in-memory breakpoint
+      -- into root_a's OWN file, not root_b's, and (b) clear the in-memory
+      -- set so it cannot bleed into root_b.
+      vim.cmd("cd " .. vim.fn.fnameescape(root_b))
+      vim.wait(200, function()
+        return vim.uv.fs_stat(file_a) ~= nil
+      end, 10)
 
-    vim.cmd("cd " .. vim.fn.fnameescape(orig_cwd))
-    remove_dap_stub()
+      vim.cmd("cd " .. vim.fn.fnameescape(orig_cwd))
+      remove_dap_stub()
 
-    assert_true(vim.uv.fs_stat(file_a) ~= nil, "root_a's breakpoint was never saved to root_a's file")
-    local saved = vim.json.decode(table.concat(vim.fn.readfile(file_a), "\n"))
-    assert_true(saved[root_a .. "/Main.java"] ~= nil, "root_a's file does not contain root_a's breakpoint")
-    assert_eq(saved[root_a .. "/Main.java"][1].line, 42)
-    assert_true(calls.cleared ~= nil and calls.cleared > 0, "DirChanged must clear in-memory breakpoints")
+      assert_true(vim.uv.fs_stat(file_a) ~= nil, "root_a's breakpoint was never saved to root_a's file")
+      local saved = vim.json.decode(table.concat(vim.fn.readfile(file_a), "\n"))
+      assert_true(saved[root_a .. "/Main.java"] ~= nil, "root_a's file does not contain root_a's breakpoint")
+      assert_eq(saved[root_a .. "/Main.java"][1].line, 42)
+      assert_true(calls.cleared ~= nil and calls.cleared > 0, "DirChanged must clear in-memory breakpoints")
 
-    os.remove(file_a)
-    os.remove(file_b)
-    vim.fn.delete(root_a, "d")
-    vim.fn.delete(root_b, "d")
+      os.remove(file_b)
+      vim.fn.delete(root_a, "d")
+      vim.fn.delete(root_b, "d")
+    end)
   end)
 end)
 
