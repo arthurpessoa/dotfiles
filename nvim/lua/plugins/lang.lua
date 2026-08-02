@@ -60,4 +60,21 @@ return {
     "mason-org/mason.nvim",
     opts = { ensure_installed = { "kotlin-debug-adapter" } },
   },
+
+  {
+    "mfussenegger/nvim-jdtls",
+    optional = true,
+    init = function()
+      vim.api.nvim_create_user_command("JdkList", function()
+        local jdk = require("util.jdk")
+        local lines = { "Discovered JDKs, newest first:", "" }
+        for _, install in ipairs(jdk.discover()) do
+          table.insert(lines, string.format("  %-8s %s", install.version, install.path))
+        end
+        table.insert(lines, "")
+        table.insert(lines, "jdtls runs on: " .. (jdk.jdtls_java() or "PATH java (none new enough found)"))
+        vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
+      end, { desc = "List the JDKs jdk.lua discovered" })
+    end,
+  },
 }

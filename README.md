@@ -23,9 +23,9 @@ curl -fsSL https://raw.githubusercontent.com/arthurpessoa/dotfiles/main/install.
 
 Either one clones this repository to `~/.dotfiles` — or pulls it if it is
 already there — links the config directories into place, and installs the
-command-line tools Neovim reaches for: `fd`, `ripgrep` and `fzf`. Running it
-again changes nothing: links already pointing at the repo and tools already on
-PATH are reported and left alone.
+command-line tools Neovim reaches for: `fd`, `ripgrep`, `fzf` and `gh` (octo
+needs `gh` to reach GitHub). Running it again changes nothing: links already
+pointing at the repo and tools already on PATH are reported and left alone.
 
 Tools come from scoop first and winget second on Windows, and from Homebrew or
 the system package manager elsewhere. A tool counts as installed when its
@@ -83,10 +83,37 @@ WezTerm **nightly**, Neovim 0.10 or newer, and JetBrainsMono Nerd Font.
 `wezterm/local.lua` is gitignored and loaded last. Return a table from it to
 override any setting on a single machine.
 
+## Neovim
+
+LazyVim, with the language, debug, test and UI support coming from its extras
+rather than from hand-written specs. `nvim/lua/plugins` holds only deltas, and
+every one of them is an `opts` table: a `config` function replaces LazyVim's
+spec instead of merging with it, which is how the same language server ends up
+attached twice.
+
+`shared/` holds the glyph encoder, the Kanagawa palette and the icon registry,
+and both this config and the WezTerm one read from it, so an icon changed in
+one place changes in both.
+
+Java picks its own JDK. `nvim/lua/util/jdk.lua` finds every installation on the
+machine, hands jdtls one new enough to run it, and gives the language server the
+full list so a project can target whichever it needs. `:JdkList` shows what it
+found.
+
+`<leader>i` is an IntelliJ vocabulary laid over LazyVim's own; `<leader>d` and
+the F-keys are the debugger.
+
 ## Tests
 
-```
-nvim -l wezterm/tests/run.lua
-```
+    nvim -l wezterm/tests/run.lua
+    nvim -l nvim/tests/run.lua
 
 No dependencies — the harness is 40 lines of Lua and the runner is Neovim.
+
+Changing an icon also means checking it exists in the font:
+
+    pip install fonttools
+    python nvim/scripts/verify-glyphs.py
+
+That checks the font's cmap. A codepoint can be present and still render
+blank, so `:IconAudit` inside Neovim draws every glyph for a visual pass.
