@@ -89,3 +89,37 @@ describe("jdk.pick_for_jdtls", function()
     assert_nil(jdk.pick_for_jdtls({ { path = "/old", version = "17.0.20", major = 17 } }, 21))
   end)
 end)
+
+describe("jdk.pick_for_kotlin_lsp", function()
+  it("skips a JDK above the ceiling in favour of one inside the range", function()
+    local pick = jdk.pick_for_kotlin_lsp({
+      { path = "/too-new", version = "25.0.1", major = 25 },
+      { path = "/good", version = "21.0.5", major = 21 },
+    }, 17, 24)
+    assert_eq(pick.path, "/good")
+  end)
+
+  it("takes the newest install inside the range, not just any", function()
+    local pick = jdk.pick_for_kotlin_lsp({
+      { path = "/older", version = "17.0.20", major = 17 },
+      { path = "/newer", version = "21.0.5", major = 21 },
+    }, 17, 24)
+    assert_eq(pick.path, "/newer")
+  end)
+
+  it("returns nil when every install is above the ceiling", function()
+    assert_nil(jdk.pick_for_kotlin_lsp({ { path = "/too-new", version = "25.0.1", major = 25 } }, 17, 24))
+  end)
+
+  it("returns nil when every install is below the floor", function()
+    assert_nil(jdk.pick_for_kotlin_lsp({ { path = "/too-old", version = "11.0.1", major = 11 } }, 17, 24))
+  end)
+
+  it("defaults to the module's own floor and ceiling", function()
+    local pick = jdk.pick_for_kotlin_lsp({
+      { path = "/too-new", version = "25.0.1", major = 25 },
+      { path = "/good", version = "17.0.20", major = 17 },
+    })
+    assert_eq(pick.path, "/good")
+  end)
+end)

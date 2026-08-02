@@ -15,6 +15,16 @@ local M = {}
 -- versions a project may target, which is what runtimes() is for.
 M.JDTLS_MIN_MAJOR = 21
 
+-- kotlin-language-server bundles an IntelliJ-derived JavaVersion parser that
+-- throws instead of falling back on a version string newer than it shipped
+-- against -- confirmed: JDK 25 crashes it outright with
+-- "IllegalArgumentException: 25.0.1" during startup. Its compiler (2.1.0)
+-- predates JDK 25 by about a year, so this ceiling tracks the last major the
+-- server could plausibly have been built and tested against. The floor is
+-- generous -- the server itself only needs a reasonably modern JVM to run.
+M.KOTLIN_LSP_MIN_MAJOR = 17
+M.KOTLIN_LSP_MAX_MAJOR = 24
+
 function M.parse_release(text)
   if not text then
     return nil
@@ -66,6 +76,20 @@ function M.pick_for_jdtls(installs, min)
   min = min or M.JDTLS_MIN_MAJOR
   for _, install in ipairs(M.sort_installs(installs)) do
     if install.major >= min then
+      return install
+    end
+  end
+  return nil
+end
+
+-- Unlike pick_for_jdtls, this has a ceiling as well as a floor: newest install
+-- with min <= major <= max, so a bleeding-edge JDK that would crash
+-- kotlin-language-server is skipped in favour of an older one that works.
+function M.pick_for_kotlin_lsp(installs, min, max)
+  min = min or M.KOTLIN_LSP_MIN_MAJOR
+  max = max or M.KOTLIN_LSP_MAX_MAJOR
+  for _, install in ipairs(M.sort_installs(installs)) do
+    if install.major >= min and install.major <= max then
       return install
     end
   end
@@ -205,6 +229,15 @@ function M.jdtls_java(min)
     return nil
   end
   return pick.path .. (vim.fn.has("win32") == 1 and "/bin/java.exe" or "/bin/java")
+end
+
+-- kotlin-language-server takes no --java-executable equivalent: it resolves
+-- java from %JAVA_HOME%\bin\java.exe with no override flag, so the only lever
+-- is JAVA_HOME itself -- hence a JDK root, not a java binary, unlike
+-- jdtls_java() above.
+function M.kotlin_lsp_home(min, max)
+  local pick = M.pick_for_kotlin_lsp(M.discover(), min, max)
+  return pick and pick.path or nil
 end
 
 return M

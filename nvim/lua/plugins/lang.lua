@@ -61,6 +61,37 @@ return {
     opts = { ensure_installed = { "kotlin-debug-adapter" } },
   },
 
+  -- kotlin-language-server's mason launcher resolves java from
+  -- %JAVA_HOME%\bin\java.exe with no override flag -- unlike jdtls's launcher
+  -- above, it takes no --java-executable equivalent. If JAVA_HOME on this
+  -- machine points at a JDK its bundled JavaVersion parser cannot read (JDK
+  -- 25 throws IllegalArgumentException: 25.0.1), the server crashes on
+  -- startup no matter what jdtls is configured with. cmd_env overrides
+  -- JAVA_HOME for this one client only, leaving PATH and everything else
+  -- untouched.
+  {
+    "neovim/nvim-lspconfig",
+    opts = function(_, opts)
+      local home = jdk.kotlin_lsp_home()
+      opts.servers = opts.servers or {}
+      if home then
+        opts.servers.kotlin_language_server = vim.tbl_deep_extend("force", opts.servers.kotlin_language_server or {}, {
+          cmd_env = { JAVA_HOME = home },
+        })
+      else
+        vim.notify(
+          "No JDK between "
+            .. jdk.KOTLIN_LSP_MIN_MAJOR
+            .. " and "
+            .. jdk.KOTLIN_LSP_MAX_MAJOR
+            .. " found; kotlin_language_server will use JAVA_HOME as-is and may fail to start",
+          vim.log.levels.WARN
+        )
+      end
+      return opts
+    end,
+  },
+
   {
     "mfussenegger/nvim-jdtls",
     optional = true,
