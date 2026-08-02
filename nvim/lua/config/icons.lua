@@ -80,11 +80,6 @@ local EXTENSION = {
   ps1 = "pwsh",
 }
 
-M.lang = {}
-for name, entry in pairs(M.entries) do
-  M.lang[name] = { glyph = entry.glyph, color = entry.color }
-end
-
 -- One highlight group per registry entry, so mini.icons can point at them.
 local function ensure_highlights()
   for name, entry in pairs(M.entries) do
