@@ -1,8 +1,8 @@
 local M = {}
 
--- UTF-8 codepoint encoding lives in modules/glyph.lua — shared with git.lua,
+-- UTF-8 codepoint encoding lives in shared/glyph.lua — shared with git.lua,
 -- which must not depend on icons.lua for an unrelated concern.
-local u = require("modules.glyph").u
+local u = require("glyph").u
 
 M.FALLBACK = { glyph = u(0xf018d), color = "#727169", kind = "shell" }
 

@@ -6,7 +6,7 @@ M.POLL_SECONDS = 4
 -- Private Use Area glyphs (U+E000-F8FF) get silently stripped in transit and
 -- land as empty strings. See Task 2's fix round. Derive each codepoint from
 -- wezterm.nerdfonts by name rather than typing it from memory.
-local u = require("modules.glyph").u
+local u = require("glyph").u
 
 local BRANCH_GLYPH = u(0xe725)    -- nf-dev-git-branch
 local CLEAN_GLYPH = u(0xf00c)     -- nf-fa-check, a check mark

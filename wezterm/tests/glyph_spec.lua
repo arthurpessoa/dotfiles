@@ -1,4 +1,4 @@
-local glyph = require("modules.glyph")
+local glyph = require("glyph")
 
 local function bytes(s)
   local out = {}

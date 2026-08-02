@@ -1,4 +1,4 @@
-package.path = "wezterm/?.lua;wezterm/tests/?.lua;" .. package.path
+package.path = "wezterm/?.lua;wezterm/tests/?.lua;shared/?.lua;" .. package.path
 require("stub_wezterm")
 
 local harness = require("harness")

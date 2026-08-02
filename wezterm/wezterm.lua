@@ -4,7 +4,20 @@ local wezterm = require("wezterm")
 -- holding this file has to be on the search path. config_dir is whatever
 -- directory WezTerm actually loaded this file from, which keeps the config
 -- working through the ~/.config/wezterm junction and through --config-file.
-package.path = wezterm.config_dir .. "/?.lua;" .. package.path
+--
+-- shared/ sits beside wezterm/ in the repository, but config_dir may be a
+-- junction, and Windows resolves ".." on a junction lexically -- so
+-- config_dir .. "/../shared" lands next to the link, not next to the real
+-- directory. The repository location is therefore taken from the same place
+-- install.ps1 puts it, with the lexical guess kept as a fallback for a clone
+-- somewhere else.
+local home = os.getenv("USERPROFILE") or os.getenv("HOME") or ""
+package.path = table.concat({
+  wezterm.config_dir .. "/?.lua",
+  home .. "/.dotfiles/shared/?.lua",
+  wezterm.config_dir .. "/../shared/?.lua",
+  package.path,
+}, ";")
 
 local config = wezterm.config_builder()
 

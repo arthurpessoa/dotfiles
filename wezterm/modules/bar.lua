@@ -36,7 +36,7 @@ local sysinfo = { polled_at = -math.huge, read_at = -math.huge, text = nil, path
 -- the tab as a digit: it changed twice in six seconds. The busy marker in a tab
 -- is therefore static, and the animated spinner survives only in the right-hand
 -- agent segment, which does ride the status tick.
-local BUSY_GLYPH = require("modules.glyph").u(0x25cf) -- black circle
+local BUSY_GLYPH = require("glyph").u(0x25cf) -- black circle
 
 -- Fractional seconds. activity.frame advances eight times a second, so whole
 -- seconds would pin the spinner to a single frame forever; chrono's %.3f adds
