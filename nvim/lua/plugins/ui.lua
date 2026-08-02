@@ -1,6 +1,22 @@
 -- Appearance, matched to the WezTerm bar directly beneath it: the same
 -- powerline separators, the same section order, the same spinner cadence, and
 -- buffers along the top because wezterm puts its own tabs at the bottom.
+--
+-- shared/ is seeded onto package.path here directly, the same pattern
+-- config/keymaps.lua:16-22 documents, rather than relying on
+-- require("config.icons") below to have already mutated the global
+-- package.path as a side effect of its own module body. That side channel is
+-- what this file depended on before: require("glyph") only resolved because
+-- config.icons happened to be required first. Reordering those two lines, or
+-- refactoring config.icons to stop mutating package.path, would have broken
+-- this file with no indication why.
+local function shared_dir()
+  local config = vim.fn.stdpath("config")
+  local real = vim.uv.fs_realpath(config) or config
+  return vim.fs.dirname(real:gsub("\\", "/")) .. "/shared"
+end
+package.path = shared_dir() .. "/?.lua;" .. package.path
+
 local icons = require("config.icons")
 
 -- Nerd Font glyphs live in the Private Use Area and the supplementary planes;
@@ -59,7 +75,18 @@ return {
 
       -- Which language servers are attached. LazyVim shows progress; this
       -- shows what is actually running, which is what you want when a server
-      -- silently failed to start.
+      -- silently failed to start. This is the only genuinely additive
+      -- segment here: LazyVim's own lualine_x already carries a DAP status
+      -- (lazyvim/plugins/ui.lua, guarded with `package.loaded["dap"] and
+      -- ...` so it never force-loads the debugger) and a noice mode segment
+      -- that already renders "recording @q" while a macro is being recorded
+      -- (noice/config/status.lua's `mode` filter is Msg.events.showmode,
+      -- the same event a bare :h showmode uses). table.insert(...,1,...)
+      -- PREPENDS to LazyVim's existing lualine_x rather than replacing it --
+      -- lazy.nvim only replaces non-table opts.sections.lualine_x wholesale,
+      -- and this one is already a table by the time this function runs, so
+      -- duplicate DAP and macro-recording segments here used to render
+      -- twice: ours plus LazyVim's own equivalents further along the list.
       table.insert(opts.sections.lualine_x, 1, {
         function()
           local names = {}
@@ -72,29 +99,6 @@ return {
           return u(0xf233) .. " " .. table.concat(names, " ")
         end,
         color = { fg = icons.palette.aqua },
-      })
-
-      -- A live debug session, so the F-keys are never a guess. Same glyph
-      -- LazyVim's own (unused, since we replace lualine_x wholesale) dap
-      -- segment uses.
-      table.insert(opts.sections.lualine_x, 1, {
-        function()
-          local ok, dap = pcall(require, "dap")
-          if not ok or not dap.session() then
-            return ""
-          end
-          return u(0xf46f) .. "  " .. dap.status()
-        end,
-        color = { fg = icons.palette.red },
-      })
-
-      -- Recording a macro is otherwise invisible once noice hides the message.
-      table.insert(opts.sections.lualine_x, 1, {
-        function()
-          local reg = vim.fn.reg_recording()
-          return reg == "" and "" or (u(0xeba7) .. "  @" .. reg)
-        end,
-        color = { fg = icons.palette.orange },
       })
 
       return opts
