@@ -89,11 +89,24 @@ vim.api.nvim_create_autocmd("LspProgress", {
 
 -- A client that detaches or crashes mid-progress never sends "end" for its
 -- open tokens, which would otherwise strand them and pin the tab busy
--- forever. LspProgress fires once per buffer a client was attached to
--- though, not only on a full stop, and the client can still be attached
--- elsewhere with a legitimate token in flight -- so the sweep is deferred
--- until the client is actually gone (vim.lsp.get_client_by_id returns nil),
--- rather than clearing its tokens on every single-buffer detach.
+-- forever. LspDetach also fires on an ordinary single-buffer detach
+-- (vim.lsp.buf_detach_client) while the client stays alive and attached
+-- elsewhere though, and that case must not clear a token the client is still
+-- legitimately holding.
+--
+-- Client:is_stopped() (self.rpc.is_closing() or self._is_stopping) is what
+-- tells the two apart, and it is already correct by the time this callback
+-- runs, synchronously, with no extra scheduling needed: Client:stop() sets
+-- _is_stopping before it ever requests shutdown, and on an unrequested exit
+-- vim.system's on_exit handler closes the process handle -- which is what
+-- rpc.is_closing() reads -- before invoking the callback that becomes
+-- Client:_on_exit, which is what fires LspDetach for every attached buffer
+-- in the first place. A fix that instead waited via vim.schedule for
+-- get_client_by_id to go nil raced Client:_on_exit's own nested
+-- vim.schedule for removing the client from the registry, and always lost:
+-- the removal is scheduled from inside the same outer callback, after the
+-- LspDetach loop, so it is always queued -- and therefore runs -- after a
+-- schedule made from within that loop.
 vim.api.nvim_create_autocmd("LspDetach", {
   group = wezterm_group,
   callback = function(event)
@@ -101,22 +114,21 @@ vim.api.nvim_create_autocmd("LspDetach", {
     if not client_id then
       return
     end
-    vim.schedule(function()
-      if vim.lsp.get_client_by_id(client_id) then
-        return
+    local client = vim.lsp.get_client_by_id(client_id)
+    if client and not client:is_stopped() then
+      return
+    end
+    local prefix = client_id .. ":"
+    local changed = false
+    for key in pairs(active_tokens) do
+      if key:sub(1, #prefix) == prefix then
+        active_tokens[key] = nil
+        changed = true
       end
-      local prefix = client_id .. ":"
-      local changed = false
-      for key in pairs(active_tokens) do
-        if key:sub(1, #prefix) == prefix then
-          active_tokens[key] = nil
-          changed = true
-        end
-      end
-      if changed then
-        set_busy(next(active_tokens) ~= nil)
-      end
-    end)
+    end
+    if changed then
+      set_busy(next(active_tokens) ~= nil)
+    end
   end,
 })
 
