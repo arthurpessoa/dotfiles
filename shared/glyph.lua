@@ -11,12 +11,14 @@ function M.u(cp)
   elseif cp < 0x800 then
     return string.char(0xC0 + math.floor(cp / 64), 0x80 + cp % 64)
   elseif cp < 0x10000 then
-    return string.char(0xE0 + math.floor(cp / 4096),
-      0x80 + math.floor(cp / 64) % 64, 0x80 + cp % 64)
+    return string.char(0xE0 + math.floor(cp / 4096), 0x80 + math.floor(cp / 64) % 64, 0x80 + cp % 64)
   end
-  return string.char(0xF0 + math.floor(cp / 262144),
+  return string.char(
+    0xF0 + math.floor(cp / 262144),
     0x80 + math.floor(cp / 4096) % 64,
-    0x80 + math.floor(cp / 64) % 64, 0x80 + cp % 64)
+    0x80 + math.floor(cp / 64) % 64,
+    0x80 + cp % 64
+  )
 end
 
 return M

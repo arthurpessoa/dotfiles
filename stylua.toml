@@ -1,0 +1,7 @@
+# Governs shared/, which is not under nvim/ and so does not pick up
+# nvim/stylua.toml -- without this, stylua falls back to its own defaults
+# (tabs) for those files instead of the two-space style the rest of the repo
+# uses. Kept identical to nvim/stylua.toml on purpose.
+indent_type = "Spaces"
+indent_width = 2
+column_width = 120

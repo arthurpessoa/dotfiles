@@ -6,3 +6,8 @@
 # PowerShell is content either way, but keeping it native avoids noisy diffs on
 # Windows, which is the only place it runs.
 *.ps1 text eol=crlf
+
+# stylua always writes LF regardless of the host. Without this the checkout's
+# CRLF and stylua's LF fight on every format, turning every run into a
+# whole-file diff of line endings alone.
+*.lua text eol=lf

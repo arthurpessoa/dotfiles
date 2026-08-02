@@ -1,4 +1,4 @@
-package.path = "wezterm/?.lua;wezterm/tests/?.lua;" .. package.path
+package.path = "wezterm/?.lua;wezterm/tests/?.lua;shared/?.lua;" .. package.path
 require("stub_wezterm")
 
 local harness = require("harness")
@@ -20,6 +20,8 @@ local specs = {
   "keys_spec",
   "plugins_spec",
   "bar_spec",
+  "shared_spec",
+  "nvim_state_spec",
 }
 
 for _, name in ipairs(specs) do

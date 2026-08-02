@@ -1,6 +1,6 @@
 local activity = require("modules.activity")
 local icons = require("modules.icons")
-local glyph = require("modules.glyph")
+local glyph = require("glyph")
 
 local M = {}
 

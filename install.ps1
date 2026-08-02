@@ -23,6 +23,7 @@ $Tools = @(
     @{ Command = 'fd';  Scoop = 'main/fd';      Winget = 'sharkdp.fd' }
     @{ Command = 'rg';  Scoop = 'main/ripgrep'; Winget = 'BurntSushi.ripgrep.MSVC' }
     @{ Command = 'fzf'; Scoop = 'main/fzf';     Winget = 'junegunn.fzf' }
+    @{ Command = 'gh';  Scoop = 'main/gh';      Winget = 'GitHub.cli' }
 )
 
 $RepoUrl  = 'https://github.com/arthurpessoa/dotfiles'

@@ -17,17 +17,20 @@ end
 
 function M.assert_eq(actual, expected, msg)
   if actual ~= expected then
-    fail(msg or "values differ",
-      string.format("expected %s, got %s", tostring(expected), tostring(actual)))
+    fail(msg or "values differ", string.format("expected %s, got %s", tostring(expected), tostring(actual)))
   end
 end
 
 function M.assert_nil(value, msg)
-  if value ~= nil then fail(msg or "expected nil", tostring(value)) end
+  if value ~= nil then
+    fail(msg or "expected nil", tostring(value))
+  end
 end
 
 function M.assert_true(value, msg)
-  if not value then fail(msg or "expected truthy", tostring(value)) end
+  if not value then
+    fail(msg or "expected truthy", tostring(value))
+  end
 end
 
 function M.run()

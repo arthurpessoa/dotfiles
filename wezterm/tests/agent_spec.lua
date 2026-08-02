@@ -1,6 +1,6 @@
 local agent = require("modules.agent")
 local activity = require("modules.activity")
-local glyph = require("modules.glyph")
+local glyph = require("glyph")
 
 describe("agent.classify", function()
   it("trusts agent-deck when it reports a state", function()

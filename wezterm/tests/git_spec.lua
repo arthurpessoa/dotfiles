@@ -1,5 +1,5 @@
 local git = require("modules.git")
-local glyph = require("modules.glyph")
+local glyph = require("glyph")
 
 -- nf-fa-check (U+F00C): the glyph git.render uses for a clean, up-to-date
 -- branch. Constructed from the codepoint rather than pasted as a literal

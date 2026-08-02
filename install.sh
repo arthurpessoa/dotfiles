@@ -77,6 +77,7 @@ tool_package() {
     fd:brew) echo fd ;;      fd:apt) echo fd-find ;;   fd:dnf) echo fd-find ;;   fd:pacman) echo fd ;;
     rg:brew) echo ripgrep ;; rg:apt) echo ripgrep ;;   rg:dnf) echo ripgrep ;;   rg:pacman) echo ripgrep ;;
     fzf:brew) echo fzf ;;    fzf:apt) echo fzf ;;      fzf:dnf) echo fzf ;;      fzf:pacman) echo fzf ;;
+    gh:brew) echo gh ;;      gh:apt) echo gh ;;        gh:dnf) echo gh ;;        gh:pacman) echo github-cli ;;
   esac
 }
 
@@ -157,7 +158,7 @@ shim_fd() {
 
 if [ "${DOTFILES_SKIP_TOOLS:-0}" != "1" ]; then
   echo
-  for tool in fd rg fzf; do
+  for tool in fd rg fzf gh; do
     install_tool "$tool"
   done
   # Runs whether or not this script installed anything: a machine that already
