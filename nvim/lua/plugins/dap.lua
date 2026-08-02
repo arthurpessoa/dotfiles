@@ -10,8 +10,29 @@
 -- Their colours are links to groups the colorscheme already defines rather
 -- than literal hexes, so the signs follow a theme change without this file
 -- knowing anything about the palette.
-local function sign(name, text, hl, numhl)
-  vim.fn.sign_define(name, { text = text, texthl = hl, numhl = numhl or "" })
+--
+-- dap.core declares nvim-dap with its own `config` function (mason-nvim-dap
+-- setup, the vscode.json_decode comment-stripping shim). lazy.nvim only
+-- auto-merges `opts`/`dependencies`/`cmd`/`event`/`ft`/`keys` across spec
+-- fragments for the same plugin; any other field, `config` included, simply
+-- replaces the parent's -- and lua/plugins/ is imported after the extras, so
+-- a `config` here would silently win and skip dap.core's setup entirely.
+-- Hooking `User LazyLoad` instead runs this once nvim-dap has actually
+-- finished loading (lazy.nvim fires it right after whichever `config`
+-- function ran), so the signs, highlight links and persistence wiring land
+-- without touching dap.core's own config at all.
+-- dap.core pre-defines these same sign names itself, from
+-- LazyVim.config.icons.dap, before this ever runs (see the comment on
+-- `init` below for why it necessarily runs after). sign_define only
+-- overwrites the keys it's given, so linehl/numhl are always passed
+-- explicitly here -- as "" when unused -- rather than left nil, or
+-- dap.core's own leftover values would survive underneath ours.
+local function sign(name, text, hl, linehl)
+  vim.fn.sign_define(name, { text = text, texthl = hl, linehl = linehl or "", numhl = "" })
+end
+
+local function link(from, to)
+  vim.api.nvim_set_hl(0, from, { link = to, default = false })
 end
 
 return {
@@ -109,28 +130,35 @@ return {
         desc = "Debug: Terminate (IDEA)",
       },
     },
-    config = function()
-      -- This `config` is allowed: dap.core declares nvim-dap with an opts
-      -- table, and LazyVim's own spec runs first. Signs and autocmds are not
-      -- expressible as opts, which is the only reason a function is used here.
-      local function link(from, to)
-        vim.api.nvim_set_hl(0, from, { link = to, default = false })
-      end
+    init = function()
+      -- `init` runs unconditionally at startup for every plugin, lazy or
+      -- not, so registering this autocmd here never depends on nvim-dap
+      -- having loaded yet. The handler itself waits for `LazyLoad` to fire
+      -- with this plugin's name before touching anything dap-related.
+      vim.api.nvim_create_autocmd("User", {
+        pattern = "LazyLoad",
+        group = vim.api.nvim_create_augroup("DapSignsAndPersist", { clear = true }),
+        callback = function(event)
+          if event.data ~= "nvim-dap" then
+            return
+          end
 
-      link("DapBreakpoint", "DiagnosticError")
-      link("DapBreakpointCondition", "DiagnosticWarn")
-      link("DapLogPoint", "DiagnosticInfo")
-      link("DapBreakpointRejected", "Comment")
-      link("DapStopped", "DiagnosticOk")
-      link("DapStoppedLine", "Visual")
+          link("DapBreakpoint", "DiagnosticError")
+          link("DapBreakpointCondition", "DiagnosticWarn")
+          link("DapLogPoint", "DiagnosticInfo")
+          link("DapBreakpointRejected", "Comment")
+          link("DapStopped", "DiagnosticOk")
+          link("DapStoppedLine", "Visual")
 
-      sign("DapBreakpoint", "●", "DapBreakpoint")
-      sign("DapBreakpointCondition", "◆", "DapBreakpointCondition")
-      sign("DapLogPoint", "◆", "DapLogPoint")
-      sign("DapBreakpointRejected", "○", "DapBreakpointRejected")
-      sign("DapStopped", "▶", "DapStopped", "DapStoppedLine")
+          sign("DapBreakpoint", "●", "DapBreakpoint")
+          sign("DapBreakpointCondition", "◆", "DapBreakpointCondition")
+          sign("DapLogPoint", "◆", "DapLogPoint")
+          sign("DapBreakpointRejected", "○", "DapBreakpointRejected")
+          sign("DapStopped", "▶", "DapStopped", "DapStoppedLine")
 
-      require("util.dap_persist").setup()
+          require("util.dap_persist").setup()
+        end,
+      })
     end,
   },
 
