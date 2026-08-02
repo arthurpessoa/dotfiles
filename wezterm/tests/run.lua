@@ -21,6 +21,7 @@ local specs = {
   "plugins_spec",
   "bar_spec",
   "shared_spec",
+  "nvim_state_spec",
 }
 
 for _, name in ipairs(specs) do

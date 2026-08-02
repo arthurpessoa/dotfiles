@@ -195,6 +195,44 @@ local function tab_busy_marker(tab)
   return " " .. BUSY_GLYPH
 end
 
+-- Neovim publishes its diagnostic counts as "E:2 W:5" (see
+-- nvim/lua/config/autocmds.lua). Anything unrecognised returns nil rather than
+-- a zeroed table, so the tab shows nothing instead of a confident "0 errors".
+function M.parse_diag(text)
+  if not text or text == "" then return nil end
+  local errors = tonumber(text:match("E:(%d+)"))
+  local warnings = tonumber(text:match("W:(%d+)"))
+  if not errors and not warnings then return nil end
+  return { errors = errors or 0, warnings = warnings or 0 }
+end
+
+-- The counts ride the tab title rather than the right-hand status, because
+-- they belong to one pane and the status is per window.
+local DIAG_ERROR_GLYPH = require("glyph").u(0xf0159) -- md-close_circle_outline
+local DIAG_WARN_GLYPH = require("glyph").u(0xf0026) -- md-alert_outline
+
+local function tab_diag_marker(tab)
+  local pane = tab.active_pane
+  local vars = pane and pane.user_vars
+  if not vars then return "" end
+
+  if vars["nvim-busy"] == "1" then
+    return " " .. BUSY_GLYPH
+  end
+
+  local diag = M.parse_diag(vars["nvim-diag"])
+  if not diag then return "" end
+
+  local out = {}
+  if diag.errors > 0 then
+    table.insert(out, DIAG_ERROR_GLYPH .. diag.errors)
+  end
+  if diag.warnings > 0 then
+    table.insert(out, DIAG_WARN_GLYPH .. diag.warnings)
+  end
+  return " " .. table.concat(out, " ")
+end
+
 -- tabline's own "process" component names the tab after WezTerm's foreground
 -- process, extension and all, and picks its icon from the same string; both are
 -- wrong for a pane running an agent (see modules/process.lua). Drawing the
@@ -280,6 +318,7 @@ function M.apply(config, plugins, platform, state)
         tab_process(theme),
         tab_title,
         tab_busy_marker,
+        tab_diag_marker,
         "zoomed",
       },
       tab_inactive = {
@@ -287,6 +326,7 @@ function M.apply(config, plugins, platform, state)
         tab_process(theme),
         tab_title,
         tab_busy_marker,
+        tab_diag_marker,
         "zoomed",
       },
       tabline_x = {
