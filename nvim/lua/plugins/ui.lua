@@ -193,4 +193,22 @@ return {
       return opts
     end,
   },
+
+  -- The IDEA group's icon is U+F06E8 (md-lightbulb_on), the same codepoint
+  -- config/keymaps.lua builds its own IDEA label from. The review group's
+  -- icon is U+F4AF (oct-code_review) -- fitting for the diffview/trouble
+  -- combo bound under it in plugins/review.lua. Both built from codepoints,
+  -- not pasted literally: the first draft of this task's brief had them as
+  -- literal glyphs, and supplementary-plane glyphs pasted into these files
+  -- get flattened to ASCII spaces in transit. Both confirmed present in the
+  -- JetBrainsMono Nerd Font cmap.
+  {
+    "folke/which-key.nvim",
+    opts = {
+      spec = {
+        { "<leader>i", group = u(0xf06e8) .. " IDEA", icon = { icon = u(0xf06e8) .. " ", color = "yellow" } },
+        { "<leader>r", group = "review", icon = { icon = u(0xf4af) .. " ", color = "green" } },
+      },
+    },
+  },
 }
