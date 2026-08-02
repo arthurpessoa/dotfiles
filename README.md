@@ -5,7 +5,11 @@ WezTerm and Neovim configuration for Windows, macOS, and Linux.
 - `wezterm/` — modular WezTerm config: bottom powerline bar via `tabline.wez`,
   per-process icons, an activity spinner, git state, AI agent state, and
   desktop notifications.
-- `nvim/` — LazyVim, with `smart-splits.nvim` for split navigation.
+- `nvim/` — LazyVim, with a Java/Kotlin toolchain, a persistent debugger, and
+  a statusline matched to the WezTerm bar.
+- `shared/` — the glyph encoder, the Kanagawa palette and the icon registry
+  both `nvim/` and `wezterm/` read from, so an icon changed once changes in
+  both places.
 
 ## Install
 
@@ -76,7 +80,9 @@ Developer Mode.
 
 ## Requirements
 
-WezTerm **nightly**, Neovim 0.10 or newer, and JetBrainsMono Nerd Font.
+WezTerm **nightly**, Neovim 0.12 or newer, and JetBrainsMono Nerd Font. The
+`editor.refactoring` extra hard-errors below 0.12
+(`extras/editor/refactoring.lua`), which sets the floor for the whole config.
 
 ## Local overrides
 
