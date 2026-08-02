@@ -20,6 +20,7 @@ _G.assert_true = harness.assert_true
 local specs = {
   "icons_spec",
   "jdk_spec",
+  "dap_persist_spec",
 }
 
 for _, name in ipairs(specs) do
